@@ -1,0 +1,10 @@
+# build artefacts
+c-shell/build/
+c-shell/shell.out
+*.o
+
+# local test harness (not part of the submission)
+tests/
+
+# frecency store created at runtime
+.cshell_frecency
