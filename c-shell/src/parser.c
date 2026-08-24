@@ -2,7 +2,7 @@
  *
  * Because the grammar is right linear the parser needs no stack: the current
  * non terminal is a single state, and each token either advances it or is a
- * syntax error.  The structure built along the way is a list of pipelines
+ * syntax error. The structure built along the way is a list of pipelines
  * (command groups separated by ';' or '&'), each a list of commands.
  */
 #include "parser.h"

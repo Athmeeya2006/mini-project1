@@ -1,11 +1,11 @@
 /* lexer.c - character level scanner.
  *
- * A six state DFA walks the line once.  Quote and escape processing happens
+ * A six state DFA walks the line once. Quote and escape processing happens
  * while scanning, so a WORD token already carries its final value:
  *
  *   S_START     between tokens, whitespace is skipped
  *   S_WORD      inside an unquoted fragment
- *   S_WORD_ESC  just consumed a backslash outside quotes
+ *   S_WORD_ESC  a backslash was consumed outside quotes
  *   S_DQ        inside "..."      S_DQ_ESC  backslash inside "..."
  *   S_SQ        inside '...'      (verbatim, no escapes)
  */
@@ -171,7 +171,7 @@ int lex_line(const char *line, Token **out)
         }
     }
 
-    /* End of line.  There is no line continuation, so any state that still
+    /* End of line. There is no line continuation, so any state that still
      * expects more input is a lexical error. */
     if (st == S_WORD_ESC || st == S_DQ || st == S_DQ_ESC || st == S_SQ) {
         buf_free(&word);

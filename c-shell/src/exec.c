@@ -115,7 +115,7 @@ static void child_exec(Command *cmd)
 }
 
 /* A single builtin with no pipe runs inside the shell, so `hop` and friends
- * can change the shell's own state.  Its redirections are installed on the
+ * can change the shell's own state. Its redirections are installed on the
  * shell's fds and removed again afterwards. */
 static int run_builtin_in_shell(Command *cmd)
 {

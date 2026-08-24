@@ -1,4 +1,4 @@
-# OSN Mini Project 1 — C-Shell
+# OSN Mini Project 1: C-Shell
 
 **Name:** athmeeyakashyap
 **Roll number:** 2024113015
@@ -38,15 +38,15 @@ Type `exit` or press `Ctrl-D` to leave the shell.
 
 ```
 c-shell/
-├── include/     one header per subsystem
-├── src/         one .c per subsystem
-└── Makefile
+    include/     one header per subsystem
+    src/         one .c per subsystem
+    Makefile
 ```
 
 | File | Responsibility |
 | --- | --- |
 | `src/main.c` | entry point |
-| `src/shell.c` | shell state and the read → lex → parse → execute loop |
+| `src/shell.c` | shell state and the read, lex, parse, execute loop |
 | `src/prompt.c` | renders `<username@hostname:path>` |
 | `src/lexer.c` | character-level DFA that produces tokens |
 | `src/parser.c` | validates the token stream against the grammar |
@@ -64,8 +64,8 @@ c-shell/
 The split follows the stages a line goes through. Text becomes tokens, tokens
 become a validated structure, and that structure gets executed. Anything used
 by more than one stage lives in `utils.c` or `pathutil.c` instead of being
-duplicated. The practical benefit is that `peek` never has to know what a pipe
-is, and `exec.c` never has to know what a quote is.
+duplicated. The result is that `peek` never has to know what a pipe is, and `exec.c`
+never has to know what a quote is.
 
 ---
 
@@ -100,8 +100,8 @@ S_DQ        inside "..."        S_DQ_ESC   a backslash inside "..."
 S_SQ        inside '...'        (verbatim, no escape processing)
 ```
 
-Quotes and escapes are resolved while scanning rather than in a second pass,
-which is what makes `WORD -> fragment+` fall out for free. The state changes
+Quotes and escapes are resolved during the scan instead of in a second
+pass, which is what gives `WORD -> fragment+` for nothing. The state changes
 but the output buffer keeps filling, so fragments that touch are joined
 automatically: `abc"123"'def'` is the single word `abc123def`. A bare `""` is a
 word whose value is empty, so the lexer tracks "a word has started" separately
@@ -114,7 +114,7 @@ which is why `echo "\n"` prints a literal backslash-n. Inside single quotes
 there is no escape processing at all.
 
 Maximal munch needs a two-character lookahead in one place, where `>>` is taken
-as a single token. A consequence worth noting is that `&&` becomes two `OP_AMP`
+as a single token. One consequence is that `&&` becomes two `OP_AMP`
 tokens. The grammar has no such operator, so the parser rejects it, which is
 the required behaviour.
 
@@ -165,7 +165,7 @@ resolve on disk, `hop` falls back to the frecency store and jumps to the
 highest ranked directory whose path contains that name as a substring, skipping
 any that no longer exist. If neither works it prints `hop: no such directory`.
 
-Two rules are easy to miss. `.` is defined as doing nothing, so it must not
+Two rules are easy to get wrong. `.` is defined as doing nothing, so it must not
 score anything, and `..` at `/` likewise does nothing. But `~` or an absolute
 path does score, even when the directory does not actually change.
 
@@ -176,10 +176,10 @@ a visit count and scale it by how long ago the directory was last seen:
 
 | Last visited | Score |
 | --- | --- |
-| within the hour | rank × 4 |
-| within the day | rank × 2 |
-| within the week | rank ÷ 2 |
-| older | rank ÷ 4 |
+| within the hour | rank * 4 |
+| within the day | rank * 2 |
+| within the week | rank / 2 |
+| older | rank / 4 |
 
 A visit adds 1 to the rank. Ties are broken lexicographically so the result
 never depends on the order entries happen to sit in the file, since the
@@ -204,7 +204,7 @@ added. That matters for `shell.out` against `src`, which must come out in that
 order because `h` sorts before `r`. Entries are printed one per line for every
 flag combination, and names containing blanks are quoted the way `ls` does.
 
-The walk uses `lstat` rather than `stat`, so a symbolic link to a directory is
+The walk uses `lstat` and not `stat`, so a symbolic link to a directory is
 listed as an ordinary entry and is not descended into. A link pointing at its
 own ancestor therefore cannot hang the listing.
 
@@ -220,23 +220,22 @@ peek (-(n|r)*)* filename*
 ```
 
 `-n` numbers non-empty lines. The number is the count of non-empty lines seen
-so far rather than the physical line number, empty lines are still printed but
+so far, not the physical line number, empty lines are still printed but
 not numbered, and the count runs continuously across all the files given.
 
 `-r` prints a file's lines in reverse. Numbering stays tied to a line's
 original position, so reversing only changes the display order and two files of
 two lines each print `2 1 4 3`.
 
-This is the one command with a real constraint on how it reads. Nothing is ever
+This is the only command with a constraint on how it reads. Nothing is ever
 loaded whole for a regular file:
 
 * forward reading walks 4 KiB chunks;
 * line counting walks 4 KiB chunks;
 * `-r` walks the file backwards with `lseek`, one 4 KiB chunk at a time.
 
-Reversing is the awkward case, because a line is found by looking for the
-newline that precedes it and a chunk boundary usually falls in the middle of a
-line. The fix is one extra buffer, `pending`, holding the part of a line that
+Reversing is the awkward case. A line is found by looking for the newline in
+front of it, and a chunk boundary usually lands in the middle of a line. One extra buffer, `pending`, solves it, holding the part of a line that
 has been seen already but whose beginning is still further left in the file.
 When a newline turns up at index `k` the line starts at `k+1`; if no newline
 has been seen yet in this chunk then that line runs off the right edge and is
@@ -264,14 +263,14 @@ processed. File names starting with `-` are not supported and give
 locate filename+
 ```
 
-This is not a "find the one that would run" command. It prints every match, so
+This does not report the one command that would run. It prints every match, so
 a name present in the working directory and in two `PATH` directories produces
 three lines, in that order. The working directory is searched first, then each
 `PATH` entry in order, and `PATH` directories are not searched recursively.
 
-Executability is tested with `access(path, X_OK)` rather than by inspecting the
-permission bits by hand, because that answers the question for the current
-user, including group membership. Directories are excluded, since a directory
+Executability is tested with `access(path, X_OK)` instead of reading the
+permission bits by hand, since that answers the question for the current user,
+including group membership. Directories are excluded, since a directory
 is "executable" only in the sense of being searchable. Symbolic links are not
 resolved, so the path is printed as it was found.
 
@@ -311,8 +310,8 @@ Input files are opened `O_RDONLY`. A missing one prints
 are opened `O_WRONLY | O_CREAT` with `O_TRUNC` for `>` or `O_APPEND` for `>>`,
 mode `0644`. One that cannot be opened prints
 `cshell: unable to create file for writing` and the command does not run.
-Either failure aborts the command rather than running it with a partial set of
-descriptors.
+Either failure aborts the command instead of running it with a partial set
+of descriptors.
 
 Input files are opened before output files, so a missing input never creates or
 truncates an output file as a side effect.
@@ -321,10 +320,10 @@ A single redirection in either direction is a plain `dup2`. The multi-file
 cases need more thought, because a process has exactly one standard input and
 one standard output:
 
-* **several `<`** — the files are concatenated, in the order given, into one
+* **several `<`**: the files are concatenated, in the order given, into one
   spool file, and the command is handed that spool. This is exactly the "one
   continuous stream" the specification asks for.
-* **several `>` or `>>`** — the command writes into a spool, and once it has
+* **several `>` or `>>`**: the command writes into a spool, and once it has
   finished the spool is copied into each destination. Each destination keeps
   its own mode, so `echo again >> a.txt > b.txt` appends to one file and
   truncates the other while both receive the output.
@@ -340,15 +339,14 @@ before any fork, so every child inherits every descriptor and can then close
 what it does not need. Stage *i* writes to the write end of pipe *i*, and stage
 *i+1* reads from the read end of pipe *i*.
 
-Two ordering decisions make this work.
+Two ordering decisions matter here.
 
 Redirections are applied after the pipe wiring, so an explicit `>` overrides
-the pipe. That is what makes `cat < in.txt | sort > out.txt` behave as
-expected.
+the pipe, which is what `cat < in.txt | sort > out.txt` needs.
 
-The parent closes every pipe descriptor after forking. This is the classic
-hang: a reader only sees end of file once all the write ends are closed, and
-the parent is holding one. With the parent's copies closed, each stage finishes
+The parent closes every pipe descriptor after forking. Forgetting this hangs
+the shell, because a reader only sees end of file once all the write ends are
+closed and the parent is still holding one. With the parent's copies closed, each stage finishes
 as its predecessor does, and the shell waits for every child before printing
 the next prompt.
 
@@ -372,7 +370,7 @@ child like any other command.
   behaviour in children, so an interrupt kills the foreground command instead
   of the shell.
 * `exit` is provided as an intrinsic alongside `Ctrl-D`.
-* An empty or whitespace-only line is valid and simply reprints the prompt.
+* An empty or whitespace-only line is valid and reprints the prompt.
 * The hostname is shown up to the first `.`, the way `bash`'s `\h` does.
 
 ---

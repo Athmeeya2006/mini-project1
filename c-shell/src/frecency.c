@@ -1,8 +1,8 @@
 /* frecency.c - persistent frequency + recency store for `hop`.
  *
  * Each directory keeps a rank (incremented on every visit) and the time of its
- * last visit.  The score shown to the lookup is the rank scaled by an age
- * bucket, exactly the shape zoxide uses:
+ * last visit. The score shown to the lookup is the rank scaled by an age
+ * bucket, the same shape zoxide uses:
  *
  *   visited < 1 hour ago  -> rank * 4      < 1 day  -> rank * 2
  *   < 1 week             -> rank / 2       older    -> rank / 4
@@ -99,7 +99,7 @@ static void frecency_save(void)
 
     free(file);
     if (f == NULL)
-        return; /* a read-only home simply means no persistence */
+        return; /* a read-only home means no persistence */
     for (size_t i = 0; i < n_entries; i++)
         fprintf(f, "%.4f\t%ld\t%s\n", entries[i].rank, entries[i].last,
                 entries[i].path);
