@@ -20,7 +20,7 @@ typedef enum {
 
 typedef struct Token {
     TokenType     type;
-    char         *value; /* WORD only: quotes stripped, escapes applied */
+    char         *value; /* word only: quotes stripped, escapes applied */
     struct Token *next;
 } Token;
 
