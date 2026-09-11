@@ -169,6 +169,29 @@ void jobs_remove(Job *j)
         job_release(j);
 }
 
+int jobs_snapshot(Job **out, int max)
+{
+    int n = 0;
+
+    for (int i = 0; i < JOBS_MAX && n < max; i++)
+        if (g_jobs[i].used && g_jobs[i].number > 0)
+            out[n++] = &g_jobs[i];
+
+    /* Slots are reused, so the table is in no particular order; job numbers
+     * only ever go up, which makes them the launch order. */
+    for (int i = 1; i < n; i++) {
+        Job *j = out[i];
+        int  k = i - 1;
+
+        while (k >= 0 && out[k]->number > j->number) {
+            out[k + 1] = out[k];
+            k--;
+        }
+        out[k + 1] = j;
+    }
+    return n;
+}
+
 void jobs_sweep(void)
 {
     sigset_t saved;
@@ -192,25 +215,35 @@ static void sigchld_handler(int sig)
     int   status;
 
     (void)sig;
-    /* WNOHANG so the shell never blocks here; WUNTRACED so that a background
-     * job stopped by the terminal (SIGTTIN on a read) is noticed too. */
-    while ((pid = waitpid(-1, &status, WNOHANG | WUNTRACED)) > 0) {
-        Job *j = find_by_pid(pid);
+    /* WNOHANG so the shell never blocks here; WUNTRACED and WCONTINUED so that
+     * a job stopped by the terminal (SIGTTIN on a read) or continued behind
+     * the shell's back is noticed too, and `activities` keeps telling the
+     * truth about it. */
+    while ((pid = waitpid(-1, &status, WNOHANG | WUNTRACED | WCONTINUED)) > 0) {
+        Job     *j = find_by_pid(pid);
+        JobProc *pr = NULL;
 
         if (j == NULL)
             continue;
-        for (int k = 0; k < j->nprocs; k++) {
-            if (j->procs[k].pid != pid)
-                continue;
-            if (WIFSTOPPED(status)) {
-                j->procs[k].state = PROC_STOPPED;
-            } else if (j->procs[k].state != PROC_DONE) {
-                j->procs[k].state = PROC_DONE;
-                j->ndone++;
-            }
-        }
-        if (WIFSTOPPED(status))
+        for (int k = 0; k < j->nprocs; k++)
+            if (j->procs[k].pid == pid)
+                pr = &j->procs[k];
+        if (pr == NULL)
             continue;
+
+        if (WIFSTOPPED(status)) {
+            pr->state = PROC_STOPPED;
+            continue;
+        }
+        if (WIFCONTINUED(status)) {
+            if (pr->state == PROC_STOPPED)
+                pr->state = PROC_RUNNING;
+            continue;
+        }
+        if (pr->state != PROC_DONE) {
+            pr->state = PROC_DONE;
+            j->ndone++;
+        }
         if (pid == j->procs[0].pid)
             j->leader_status = status;
         /* A pipeline is reported once, under the pid of its first stage. */

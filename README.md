@@ -196,6 +196,42 @@ away. The handler is deliberately installed without `SA_RESTART`, so the read at
 the prompt comes back with `EINTR`, the message appears on a line of its own,
 and the prompt is drawn again underneath it.
 
+### Part E1: activities
+
+Every pipeline now runs in a process group of its own, background or not. The
+group id is the pid of the first stage, and `setpgid` is called both in the
+parent right after `fork` and in the child before it execs, so whichever runs
+first the group exists before the command starts.
+
+A foreground group only works that way if it is also given the terminal, or it
+would be a background group as far as the terminal is concerned and would be
+stopped with `SIGTTIN` the moment it read anything. So the shell hands the
+terminal over with `tcsetpgrp` before waiting and takes it back afterwards.
+That call comes from a process group that is not the terminal's own, which
+would normally stop the caller with `SIGTTOU`, so the shell ignores that signal
+and the children inherit that while they claim the terminal for themselves.
+The shell also puts itself in a process group of its own at startup, and all of
+this is skipped when standard input is not a terminal, since there is then no
+foreground group to hand around.
+
+`activities` prints the job table: one line per group, `[job_number] pgid
+<pgid>`, with one indented line per process underneath giving its pid, the name
+it was launched under and whether it is `Running` or `Stopped`. Groups come out
+in the order they were launched, which is the order of their job numbers, since
+those only ever go up. Slots in the table are reused, so the listing is sorted
+by number rather than by position.
+
+A process is dropped from the listing as soon as it has been reaped, and a
+group disappears once all of its processes have; a pipeline that has lost only
+its first stage still lists the rest, under the group id it was given at the
+start. The table is shared with the `SIGCHLD` handler, so the listing is taken
+and printed with the signal blocked.
+
+Stopped is not only a Ctrl-Z thing: a background job that tries to read from
+the terminal is sent `SIGTTIN`, which stops its whole group, and the handler
+notices because it reaps with `WUNTRACED`. It also passes `WCONTINUED`, so a
+group that is continued again is listed as running once more.
+
 ### Source layout
 
 | File | Does |
@@ -206,7 +242,7 @@ and the prompt is drawn again underneath it.
 | `src/lexer.c` | line to tokens |
 | `src/parser.c` | tokens to pipelines and commands |
 | `src/builtins.c` | intrinsic dispatch |
-| `src/b_hop.c`, `src/b_reveal.c`, `src/b_peek.c`, `src/b_locate.c` | one intrinsic each |
+| `src/b_hop.c`, `src/b_reveal.c`, `src/b_peek.c`, `src/b_locate.c`, `src/b_activities.c` | one intrinsic each |
 | `src/frecency.c` | the frequency and recency store used by `hop` |
 | `src/redirect.c` | opening redirection targets |
 | `src/exec.c` | command lookup, fork, pipes, process groups, wait |

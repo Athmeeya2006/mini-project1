@@ -3,6 +3,7 @@
 #define CSHELL_SHELL_H
 
 #include <limits.h>
+#include <sys/types.h>
 
 #ifndef PATH_MAX
 #define PATH_MAX 4096
@@ -20,6 +21,9 @@ typedef struct {
     int  has_prev;       /* 0 until the first successful directory change */
     int  should_exit;    /* set by the `exit` builtin */
     int  last_status;    /* exit status of the last foreground command */
+    pid_t pgid;          /* the shell's own process group */
+    int  interactive;    /* 1 when stdin is a terminal, so job control works */
+    int  terminal_fd;    /* the fd the terminal's foreground group is set on */
 } ShellState;
 
 extern ShellState g_shell;

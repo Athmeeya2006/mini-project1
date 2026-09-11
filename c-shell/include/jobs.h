@@ -60,6 +60,10 @@ int  jobs_assign_number(Job *j);
 void jobs_add_proc(Job *j, pid_t pid, const char *name);
 void jobs_remove(Job *j);
 
+/* The live jobs that have a number, oldest first, for `activities`. Returns
+ * how many were written to `out`. Must run with SIGCHLD blocked. */
+int jobs_snapshot(Job **out, int max);
+
 /* Retire the jobs whose processes have all exited, fanning out whatever
  * redirections they still owe. Blocks SIGCHLD itself. */
 void jobs_sweep(void);

@@ -9,7 +9,7 @@
 #include "utils.h"
 
 static const char *const builtin_names[] = {
-    "hop", "reveal", "peek", "locate", "exit", NULL
+    "hop", "reveal", "peek", "locate", "activities", "exit", NULL
 };
 
 int builtin_is(const char *name)
@@ -34,6 +34,8 @@ int builtin_run(Command *cmd)
         status = builtin_peek(cmd->argc, cmd->argv);
     else if (strcmp(name, "locate") == 0)
         status = builtin_locate(cmd->argc, cmd->argv);
+    else if (strcmp(name, "activities") == 0)
+        status = builtin_activities(cmd->argc, cmd->argv);
     else if (strcmp(name, "exit") == 0) {
         g_shell.should_exit = 1;
         status = 0;

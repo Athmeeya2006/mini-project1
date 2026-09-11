@@ -327,16 +327,21 @@ int exec_pipeline(Pipeline *p, int *launch_failed)
             continue;
         }
         if (pid == 0) {
+            /* Every pipeline runs in a process group of its own, set here as
+             * well as in the parent so neither can race the other. */
+            setpgid(0, pgid);
+            pending_close_in_child();
             if (p->background) {
-                /* Every background group is a process group of its own, so it
-                 * never shares the terminal with the shell: a read from the
-                 * terminal raises SIGTTIN and stops it instead. */
-                setpgid(0, pgid);
+                /* A background group never holds the terminal, so a read from
+                 * it raises SIGTTIN and stops the group instead of stealing
+                 * the user's input. */
                 close(sync_fd[1]);
-                pending_close_in_child();
                 wait_for_release(sync_fd[0]);
-            } else {
-                pending_close_in_child();
+            } else if (g_shell.interactive) {
+                /* Claim the terminal here too, so the command can read from it
+                 * whichever of the child and the parent gets there first.
+                 * SIGTTOU is still inherited as ignored at this point. */
+                tcsetpgrp(g_shell.terminal_fd, getpgrp());
             }
             /* Wire this stage into the pipeline... */
             if (i > 0)
@@ -355,12 +360,9 @@ int exec_pipeline(Pipeline *p, int *launch_failed)
 
             child_exec(c, paths[i]);
         }
-        if (p->background) {
-            /* Set in both processes, so neither can race the other. */
-            setpgid(pid, pgid);
-            if (pgid == 0)
-                pgid = pid;
-        }
+        setpgid(pid, pgid);
+        if (pgid == 0)
+            pgid = pid;
         pids[i] = pid;
     }
 
@@ -380,7 +382,7 @@ int exec_pipeline(Pipeline *p, int *launch_failed)
             jobs_add_proc(job, pids[i], display_name(c->argv[0]));
     }
     if (job != NULL)
-        job->pgid = p->background ? pgid : getpgrp();
+        job->pgid = pgid;
 
     if (p->background) {
         int spooled = 0;
@@ -409,6 +411,10 @@ int exec_pipeline(Pipeline *p, int *launch_failed)
             *launch_failed = 1;
         status = 0;
     } else {
+        /* The foreground group gets the terminal for as long as it runs. */
+        if (g_shell.interactive && pgid > 0)
+            tcsetpgrp(g_shell.terminal_fd, pgid);
+
         for (i = 0; i < n; i++) {
             int wstatus;
 
@@ -421,6 +427,9 @@ int exec_pipeline(Pipeline *p, int *launch_failed)
             if (i == n - 1)
                 status = WIFEXITED(wstatus) ? WEXITSTATUS(wstatus) : 1;
         }
+
+        if (g_shell.interactive)
+            tcsetpgrp(g_shell.terminal_fd, g_shell.pgid);
         jobs_remove(job);
         jobs_unblock(&saved);
 

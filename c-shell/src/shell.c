@@ -30,6 +30,20 @@ void shell_init(void)
     /* Ctrl-C must kill the foreground job, not the shell itself. */
     signal(SIGINT, SIG_IGN);
     signal(SIGQUIT, SIG_IGN);
+    /* Handing the terminal back and forth with tcsetpgrp() is done from a
+     * process group that is not the terminal's own, which would otherwise stop
+     * the shell with SIGTTOU. */
+    signal(SIGTTOU, SIG_IGN);
+
+    /* Job control needs the shell to be a process group of its own, holding
+     * the terminal, so that every pipeline it launches can be given a group
+     * of its own and handed the terminal in turn. */
+    g_shell.terminal_fd = STDIN_FILENO;
+    g_shell.interactive = isatty(g_shell.terminal_fd);
+    setpgid(0, 0);
+    g_shell.pgid = getpgrp();
+    if (g_shell.interactive)
+        tcsetpgrp(g_shell.terminal_fd, g_shell.pgid);
 
     jobs_init();
     frecency_init();
