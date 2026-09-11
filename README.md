@@ -271,6 +271,57 @@ does not wait for any of them. A stopped process would not see that signal
 until something got it running again, so a stopped group is sent `SIGCONT`
 after it.
 
+### Part E3: resume
+
+`resume %n fg [--timeout s]` and `resume %n bg` put a job that is stopped, or
+merely running in the background, back to work. The line is checked before the
+job is looked up, so a malformed command says `resume: invalid syntax` whether
+or not the job exists, and only a well formed one that names an unknown job
+says `resume: no such job`.
+
+Either way the job's process group is sent `SIGCONT` and its processes are
+marked running again. `bg` then prints `[n] + Running    <command>` and comes
+straight back to the prompt without touching the terminal; from that point the
+job is a background job, so its end is announced like any other. `fg` prints
+the command line, exactly as launching it in the foreground would, hands the
+terminal to the job, and waits for it with `WUNTRACED`. If it stops again it is
+reported and kept, and if it finishes it is dropped from the table. The
+terminal comes back to the shell however it ended.
+
+`--timeout` arms a `setitimer` before the wait, with a handler installed
+without `SA_RESTART` so that the wait comes back when it fires. The timer is
+set to repeat every second: a signal that arrives in the gap between the flag
+being checked and the wait starting would otherwise be missed and the wait
+would never come back. It is taken down again whichever way the wait ended, so
+a job that finishes or stops first cancels it. When it does fire, the job's
+group is sent `SIGTERM`, `resume: job timed out` is printed, and the job leaves
+the table, since it has been killed rather than stopped. Its children are
+reaped by the `SIGCHLD` handler once the signal is unblocked, which is also why
+they leave no zombies behind.
+
+### Part E4: ping
+
+`ping <target> <signal_number>` sends a signal to one process or to a whole
+process group. A target with a `%` is a job number and the signal goes to every
+process in that job's group; a plain number is a pid.
+
+The signal is checked before the target is looked up, so `ping 99999 abc` is a
+syntax error rather than an unknown process. It has to be a whole non-negative
+number, which makes a negative one a syntax error rather than something to be
+reduced by the modulo. What is actually sent is that number modulo 64, but the
+message always echoes what the user typed, so `ping 4030 79` says `Sent signal
+79 to 4030` and sends signal 15.
+
+Only what the shell started and still tracks can be a target. The pid is looked
+up in the job table rather than on the system, so a pid that exists but came
+from somewhere else is as unknown here as one that never existed at all, and
+both say `ping: no such process found`.
+
+Nothing extra is needed to keep the listing honest afterwards: a group that is
+sent `SIGSTOP` or `SIGCONT` shows up as stopped or running again in
+`activities`, because the reaper already watches for both, and one that is
+killed is announced as having exited abnormally.
+
 ### Source layout
 
 | File | Does |
@@ -281,7 +332,7 @@ after it.
 | `src/lexer.c` | line to tokens |
 | `src/parser.c` | tokens to pipelines and commands |
 | `src/builtins.c` | intrinsic dispatch |
-| `src/b_hop.c`, `src/b_reveal.c`, `src/b_peek.c`, `src/b_locate.c`, `src/b_activities.c` | one intrinsic each |
+| `src/b_hop.c`, `src/b_reveal.c`, `src/b_peek.c`, `src/b_locate.c`, `src/b_activities.c`, `src/b_resume.c`, `src/b_ping.c` | one intrinsic each |
 | `src/frecency.c` | the frequency and recency store used by `hop` |
 | `src/redirect.c` | opening redirection targets |
 | `src/exec.c` | command lookup, fork, pipes, process groups, wait |

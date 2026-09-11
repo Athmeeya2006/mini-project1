@@ -33,6 +33,10 @@ void  strvec_push(StrVec *v, char *owned);
 void  strvec_sort(StrVec *v); /* lexicographic, plain ASCII (strcmp) */
 void  strvec_free(StrVec *v);
 
+/* Parse a whole non-negative number. Returns -1 for anything else, including
+ * a negative number, trailing rubbish or an empty string. */
+long parse_nonneg(const char *s);
+
 /* Print "cshell: ..." style diagnostics on stderr. */
 void err_printf(const char *fmt, ...);
 

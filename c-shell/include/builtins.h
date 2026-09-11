@@ -15,5 +15,7 @@ int builtin_reveal(int argc, char **argv);
 int builtin_peek(int argc, char **argv);
 int builtin_locate(int argc, char **argv);
 int builtin_activities(int argc, char **argv);
+int builtin_resume(int argc, char **argv);
+int builtin_ping(int argc, char **argv);
 
 #endif /* CSHELL_BUILTINS_H */

@@ -60,8 +60,20 @@ int  jobs_assign_number(Job *j);
 void jobs_add_proc(Job *j, pid_t pid, const char *name);
 void jobs_remove(Job *j);
 
-/* Mark every process of a job that has not exited as stopped. */
+/* The job with this number, or the one holding this pid, or NULL. Only
+ * processes that have not exited count. Must run with SIGCHLD blocked. */
+Job *jobs_find_number(int number);
+Job *jobs_find_pid(pid_t pid);
+
+/* Mark every process of a job that has not exited as stopped, or as running
+ * again after a SIGCONT. */
 void jobs_mark_stopped(Job *j);
+void jobs_mark_running(Job *j);
+
+/* Mark a job stopped, give it a number if it has none, and announce it as
+ * "[n] + Stopped    <command>". The leading newline puts the line under the
+ * "^Z" the terminal has just echoed. */
+void jobs_report_stopped(Job *j);
 
 /* 1 if any tracked job has a stopped process. */
 int jobs_any_stopped(void);

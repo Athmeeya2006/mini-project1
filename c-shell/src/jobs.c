@@ -169,6 +169,31 @@ void jobs_remove(Job *j)
         job_release(j);
 }
 
+Job *jobs_find_number(int number)
+{
+    if (number <= 0)
+        return NULL;
+    for (int i = 0; i < JOBS_MAX; i++)
+        if (g_jobs[i].used && g_jobs[i].number == number)
+            return &g_jobs[i];
+    return NULL;
+}
+
+Job *jobs_find_pid(pid_t pid)
+{
+    if (pid <= 0)
+        return NULL;
+    for (int i = 0; i < JOBS_MAX; i++) {
+        if (!g_jobs[i].used)
+            continue;
+        for (int k = 0; k < g_jobs[i].nprocs; k++)
+            if (g_jobs[i].procs[k].pid == pid &&
+                g_jobs[i].procs[k].state != PROC_DONE)
+                return &g_jobs[i];
+    }
+    return NULL;
+}
+
 void jobs_mark_stopped(Job *j)
 {
     if (j == NULL)
@@ -176,6 +201,27 @@ void jobs_mark_stopped(Job *j)
     for (int k = 0; k < j->nprocs; k++)
         if (j->procs[k].state != PROC_DONE)
             j->procs[k].state = PROC_STOPPED;
+}
+
+void jobs_mark_running(Job *j)
+{
+    if (j == NULL)
+        return;
+    for (int k = 0; k < j->nprocs; k++)
+        if (j->procs[k].state == PROC_STOPPED)
+            j->procs[k].state = PROC_RUNNING;
+}
+
+void jobs_report_stopped(Job *j)
+{
+    if (j == NULL)
+        return;
+    jobs_mark_stopped(j);
+    /* From here on the job can only end while the shell is not waiting for
+     * it, so its end is worth announcing. */
+    j->notify = 1;
+    printf("\n[%d] + Stopped    %s\n", jobs_assign_number(j), j->cmd);
+    fflush(stdout);
 }
 
 int jobs_any_stopped(void)

@@ -459,13 +459,7 @@ int exec_pipeline(Pipeline *p, int *launch_failed)
             /* The job stays on the books so it can be listed and resumed. Its
              * number is handed out now, which is when the user first hears
              * about it. */
-            jobs_mark_stopped(job);
-            if (job != NULL) {
-                job->notify = 1;
-                printf("\n[%d] + Stopped    %s\n", jobs_assign_number(job),
-                       job->cmd);
-                fflush(stdout);
-            }
+            jobs_report_stopped(job);
             plans = hand_over_plans(job, plans, n);
             status = 128 + SIGTSTP;
         } else {

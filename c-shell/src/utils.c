@@ -35,6 +35,20 @@ char *xstrdup(const char *s)
     return p;
 }
 
+long parse_nonneg(const char *s)
+{
+    char *end;
+    long  v;
+
+    if (s == NULL || s[0] == '\0')
+        return -1;
+    errno = 0;
+    v = strtol(s, &end, 10);
+    if (errno != 0 || *end != '\0' || v < 0)
+        return -1;
+    return v;
+}
+
 void buf_init(Buf *b)
 {
     b->cap  = 32;
