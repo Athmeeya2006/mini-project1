@@ -232,6 +232,45 @@ the terminal is sent `SIGTTIN`, which stops its whole group, and the handler
 notices because it reaps with `WUNTRACED`. It also passes `WCONTINUED`, so a
 group that is continued again is listed as running once more.
 
+### Part E2: terminal control
+
+Ctrl-C and Ctrl-Z reach whichever process group owns the terminal, which is the
+foreground job, so the shell itself only sees them while it is the foreground
+group, that is, while it waits at the prompt. It handles both rather than
+ignoring them: a handler is what makes the read come back so the prompt can be
+drawn again, and it is installed without `SA_RESTART` for exactly that reason.
+The newline that puts the prompt under the echoed `^C` is written from the
+handler with `write`, since that keeps it in step with the echo and, unlike
+`printf`, is safe to call there. `SIGTTOU` is ignored, because handing the
+terminal over and taking it back is done from a process group that is not the
+terminal's own.
+
+A foreground job is waited for with `WUNTRACED`, so Ctrl-Z comes back to the
+shell instead of leaving it waiting for a process that is never going to
+finish. The whole group is marked stopped, the terminal is reclaimed, and the
+job is kept in the table so it can be listed and resumed later. It is given a
+job number at that point, since that is when the user first hears about it, and
+the shell prints `[n] + Stopped    <command>`. Everything the job still owns,
+including output spooled for several destination files, travels with it, and is
+only finished off once the job really ends.
+
+Ctrl-D is end of input only on an empty line. On a terminal it makes the read
+return whatever has been typed so far without a newline, so the shell keeps
+that text and reads on, and to the user nothing happens. Input that is not a
+terminal has no Ctrl-D at all, so there a last line without a closing newline is
+simply run. End of input on a terminal is not permanent either, which is why
+the shell clears the end of file flag every time: otherwise every later read
+would report end of input again without so much as looking at the terminal.
+
+Leaving kills whatever the shell started, so a Ctrl-D with a stopped job would
+throw that job away. The first one therefore only warns with `cshell: there are
+stopped jobs`; a second one with nothing typed in between goes through, and any
+line that is actually run clears the warning again. On the way out the shell
+sends `SIGHUP` to the process group of every job it still has on the books and
+does not wait for any of them. A stopped process would not see that signal
+until something got it running again, so a stopped group is sent `SIGCONT`
+after it.
+
 ### Source layout
 
 | File | Does |
@@ -256,6 +295,7 @@ See [xv6/report.md](xv6/report.md).
 ## Notes
 
 * Errors go to standard error and ordinary output goes to standard output.
-* `Ctrl-C` and `Ctrl-\` are ignored by the shell and restored in children, so an
-  interrupt kills the running command instead of the shell.
+* `Ctrl-\` is ignored by the shell, and every job control signal is put back to
+  its default in children, so nothing a command inherits stops it from being
+  interrupted or stopped itself.
 * An empty or whitespace only line is valid and just reprints the prompt.

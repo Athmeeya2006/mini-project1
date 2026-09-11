@@ -158,8 +158,14 @@ static void child_exec(Command *cmd, char *path)
     /* The shell forks with SIGCHLD blocked, and the mask survives exec. */
     sigemptyset(&empty);
     sigprocmask(SIG_SETMASK, &empty, NULL);
+    /* The shell's own handling of the job control signals must not be
+     * inherited: what it ignores would stay ignored across exec, and a command
+     * that ignored SIGTSTP could not be stopped with Ctrl-Z. */
     signal(SIGINT, SIG_DFL);
     signal(SIGQUIT, SIG_DFL);
+    signal(SIGTSTP, SIG_DFL);
+    signal(SIGTTIN, SIG_DFL);
+    signal(SIGTTOU, SIG_DFL);
     signal(SIGCHLD, SIG_DFL);
 
     /* Intrinsics behave like any other command inside a pipeline. */
@@ -237,6 +243,26 @@ static void pipeline_text(Pipeline *p, char *buf, size_t cap)
     }
 }
 
+/* A job that outlives the call - backgrounded, or stopped - takes its
+ * redirections with it, because output spooled for several destination files
+ * can only be copied once the command has actually finished. Returns what is
+ * left for the caller to free, which is nothing once the job has taken them. */
+static RedirPlan *hand_over_plans(Job *job, RedirPlan *plans, int n)
+{
+    int spooled = 0;
+
+    for (int i = 0; i < n; i++)
+        spooled |= plans[i].out_is_temp;
+    if (spooled && job != NULL) {
+        job->plans  = plans;
+        job->nplans = n;
+        return NULL;
+    }
+    for (int i = 0; i < n; i++)
+        redirect_release(&plans[i]);
+    return plans;
+}
+
 int exec_pipeline(Pipeline *p, int *launch_failed)
 {
     Command   *c;
@@ -246,6 +272,7 @@ int exec_pipeline(Pipeline *p, int *launch_failed)
     int      (*pipes)[2] = NULL;
     int        sync_fd[2] = { -1, -1 };
     int        n = 0, i, status = 0;
+    int        stopped = 0, interrupted = 0;
     pid_t      pgid = 0;
     sigset_t   saved;
     Job       *job;
@@ -385,20 +412,7 @@ int exec_pipeline(Pipeline *p, int *launch_failed)
         job->pgid = pgid;
 
     if (p->background) {
-        int spooled = 0;
-
-        /* Output that is fanned out into several files can only be copied once
-         * the job has finished, so the plans travel with it. */
-        for (i = 0; i < n; i++)
-            spooled |= plans[i].out_is_temp;
-        if (spooled && job != NULL) {
-            job->plans  = plans;
-            job->nplans = n;
-            plans = NULL;
-        } else {
-            for (i = 0; i < n; i++)
-                redirect_release(&plans[i]);
-        }
+        plans = hand_over_plans(job, plans, n);
 
         printf("[%d] %d\n", job != NULL ? job->number : 0, (int)pids[0]);
         fflush(stdout);
@@ -422,20 +436,51 @@ int exec_pipeline(Pipeline *p, int *launch_failed)
                 status = 1;
                 continue;
             }
-            while (waitpid(pids[i], &wstatus, 0) < 0 && errno == EINTR)
+            /* WUNTRACED, because Ctrl-Z stops the group rather than ending it
+             * and the shell has to come back to the prompt when it does. */
+            while (waitpid(pids[i], &wstatus, WUNTRACED) < 0 && errno == EINTR)
                 ;
+            if (WIFSTOPPED(wstatus)) {
+                stopped = 1;
+                break;
+            }
+            if (WIFSIGNALED(wstatus) &&
+                (WTERMSIG(wstatus) == SIGINT || WTERMSIG(wstatus) == SIGQUIT))
+                interrupted = 1;
             if (i == n - 1)
                 status = WIFEXITED(wstatus) ? WEXITSTATUS(wstatus) : 1;
         }
 
+        /* However it ended, the terminal comes back to the shell. */
         if (g_shell.interactive)
             tcsetpgrp(g_shell.terminal_fd, g_shell.pgid);
-        jobs_remove(job);
+
+        if (stopped) {
+            /* The job stays on the books so it can be listed and resumed. Its
+             * number is handed out now, which is when the user first hears
+             * about it. */
+            jobs_mark_stopped(job);
+            if (job != NULL) {
+                job->notify = 1;
+                printf("\n[%d] + Stopped    %s\n", jobs_assign_number(job),
+                       job->cmd);
+                fflush(stdout);
+            }
+            plans = hand_over_plans(job, plans, n);
+            status = 128 + SIGTSTP;
+        } else {
+            jobs_remove(job);
+            for (i = 0; i < n; i++) {
+                redirect_finish(&plans[i]);
+                redirect_release(&plans[i]);
+            }
+        }
         jobs_unblock(&saved);
 
-        for (i = 0; i < n; i++) {
-            redirect_finish(&plans[i]);
-            redirect_release(&plans[i]);
+        /* Ctrl-C leaves the cursor after the echoed "^C". */
+        if (interrupted) {
+            putchar('\n');
+            fflush(stdout);
         }
     }
 

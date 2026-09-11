@@ -169,6 +169,57 @@ void jobs_remove(Job *j)
         job_release(j);
 }
 
+void jobs_mark_stopped(Job *j)
+{
+    if (j == NULL)
+        return;
+    for (int k = 0; k < j->nprocs; k++)
+        if (j->procs[k].state != PROC_DONE)
+            j->procs[k].state = PROC_STOPPED;
+}
+
+int jobs_any_stopped(void)
+{
+    sigset_t saved;
+    int      any = 0;
+
+    jobs_block(&saved);
+    for (int i = 0; i < JOBS_MAX && !any; i++) {
+        if (!g_jobs[i].used)
+            continue;
+        for (int k = 0; k < g_jobs[i].nprocs; k++)
+            if (g_jobs[i].procs[k].state == PROC_STOPPED)
+                any = 1;
+    }
+    jobs_unblock(&saved);
+    return any;
+}
+
+void jobs_hangup(void)
+{
+    sigset_t saved;
+
+    jobs_block(&saved);
+    for (int i = 0; i < JOBS_MAX; i++) {
+        Job *j = &g_jobs[i];
+        int  stopped = 0;
+
+        if (!j->used || j->pgid <= 0 || j->ndone == j->nprocs)
+            continue;
+        for (int k = 0; k < j->nprocs; k++)
+            if (j->procs[k].state == PROC_STOPPED)
+                stopped = 1;
+
+        kill(-j->pgid, SIGHUP);
+        /* A stopped process would only see the SIGHUP once something got it
+         * running again, so it is also continued. The shell does not wait for
+         * any of this. */
+        if (stopped)
+            kill(-j->pgid, SIGCONT);
+    }
+    jobs_unblock(&saved);
+}
+
 int jobs_snapshot(Job **out, int max)
 {
     int n = 0;

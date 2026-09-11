@@ -60,6 +60,16 @@ int  jobs_assign_number(Job *j);
 void jobs_add_proc(Job *j, pid_t pid, const char *name);
 void jobs_remove(Job *j);
 
+/* Mark every process of a job that has not exited as stopped. */
+void jobs_mark_stopped(Job *j);
+
+/* 1 if any tracked job has a stopped process. */
+int jobs_any_stopped(void);
+
+/* Send SIGHUP to the process group of every job still on the books, on the
+ * way out. Does not wait for any of them. */
+void jobs_hangup(void);
+
 /* The live jobs that have a number, oldest first, for `activities`. Returns
  * how many were written to `out`. Must run with SIGCHLD blocked. */
 int jobs_snapshot(Job **out, int max);
