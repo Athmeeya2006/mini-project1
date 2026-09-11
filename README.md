@@ -128,15 +128,73 @@ created before any fork, so every child inherits every descriptor and can then
 close what it does not need. The parent closes all of them after forking; if it
 kept a write end open, the reader on the other side would never see end of file
 and the shell would hang. Redirections are applied after the pipe wiring, so an
-explicit `>` overrides the pipe. A stage whose command cannot be found reports it
-and exits with status 127, and the remaining stages still run. An intrinsic on
-its own runs inside the shell itself, with its redirections installed on the
-shell's own descriptors and restored afterwards, because otherwise `hop` would
-change the directory of a child that is about to exit. Inside a pipeline an
+explicit `>` overrides the pipe. An intrinsic on its own runs inside the shell
+itself, with its redirections installed on the shell's own descriptors and
+restored afterwards, because otherwise `hop` would change the directory of a
+child that is about to exit. Inside a pipeline an
 intrinsic runs in the child like any other command.
 
-When a line contains `;` or `&`, only the first command group runs. The rest is
-parsed and validated but ignored, as the specification requires for this part.
+### Part D: sequential and background execution
+
+A line is a sequence of command groups separated by `;` or `&`, and they run
+left to right. A foreground group is waited for before the next one starts. The
+sequence only stops early when the shell cannot start a command at all, which
+is reported as `cshell: command not found (name)`. A command that did start and
+then exited with a non-zero status has not failed, so the sequence carries on.
+
+To tell those two cases apart the shell has to know whether a command exists
+before it forks, so names are now resolved in the parent rather than in the
+child. A group whose name cannot be resolved is not started at all, not even
+partially, which is also why a pipeline with one unknown stage runs none of its
+stages: the whole group is one `shell_cmd` and either starts or does not.
+
+A group followed by `&` is launched and left running, and the shell announces it
+as `[job_number] pid`. Job numbers come from a counter that only goes up, so a
+number is never reused in a session. They are handed out when the user is told
+about a job, which means when it is backgrounded, or, once Part E is in, when a
+foreground job is stopped. For a pipeline the announced pid is that of the first
+stage.
+
+That line has to appear before any output the command produces, and a child that
+is forked first could easily reach `exec` before the shell got round to printing
+it. So every background child stops just before `exec` and waits for the shell
+to close the write end of a small pipe. The shell closes it once it has printed
+the job lines, which happens at the end of the input line, or earlier if a
+foreground command in the same line needs to run first. Children close every
+such pipe they inherit, otherwise a job launched later would hold an earlier
+job's barrier open.
+
+Each background group is put in a process group of its own with `setpgid`,
+called in both the parent and the child so neither can race the other. The
+terminal stays with the shell's own group, so a background process that tries to
+read from the terminal is sent `SIGTTIN` and stops instead of stealing the
+user's input.
+
+Completions are noticed by a `SIGCHLD` handler. It reaps with `WNOHANG`, so the
+shell never blocks in it, and with `WUNTRACED`, so a job stopped by the terminal
+is noticed as stopped rather than not at all. A job is reported once all of its
+processes have gone, under the name and pid of its first stage:
+`<name> with pid <pid> exited normally`, or `exited abnormally` if it was killed
+by a signal. Any exit status counts as a normal exit.
+
+The handler runs at arbitrary points in the shell's execution, so it only uses
+async signal safe calls: the message is formatted by hand into a buffer and sent
+with one `write`, never through `printf`. Anything that needs more than that,
+such as copying a finished job's spooled output into its destination files and
+freeing its slot, is left to a sweep the reader loop runs before each prompt.
+
+The shell blocks `SIGCHLD` from just before it forks a foreground group until
+that group has been waited for. That keeps the handler from reaping a child the
+shell is about to wait for itself, and it is also what the specification asks
+for: a background job that finishes while a foreground job is running is only
+reported once the foreground job is done, because the signal is delivered when
+the shell unblocks it. The mask is cleared again in every child, since it would
+otherwise survive `exec`.
+
+A job that finishes while the shell is waiting for input is reported straight
+away. The handler is deliberately installed without `SA_RESTART`, so the read at
+the prompt comes back with `EINTR`, the message appears on a line of its own,
+and the prompt is drawn again underneath it.
 
 ### Source layout
 
@@ -151,7 +209,8 @@ parsed and validated but ignored, as the specification requires for this part.
 | `src/b_hop.c`, `src/b_reveal.c`, `src/b_peek.c`, `src/b_locate.c` | one intrinsic each |
 | `src/frecency.c` | the frequency and recency store used by `hop` |
 | `src/redirect.c` | opening redirection targets |
-| `src/exec.c` | command lookup, fork, pipes, wait |
+| `src/exec.c` | command lookup, fork, pipes, process groups, wait |
+| `src/jobs.c` | the job table and the `SIGCHLD` reaper |
 | `src/pathutil.c`, `src/utils.c` | shared helpers |
 
 ## xv6

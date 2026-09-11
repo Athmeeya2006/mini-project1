@@ -10,7 +10,16 @@
  * Returns a malloc'd path or NULL when nothing executable was found. */
 char *exec_resolve(const char *name);
 
-/* Fork, wire up pipes and redirections, and wait for the whole pipeline. */
-int exec_pipeline(Pipeline *p);
+/* Run one command group. A foreground group is waited for and its status
+ * returned; a background group is launched, announced as "[n] pid" and left
+ * running. *launch_failed is set when the group could not be started at all,
+ * which is what stops the rest of a ';' or '&' sequence. */
+int exec_pipeline(Pipeline *p, int *launch_failed);
+
+/* Background children are held just before exec until the shell has printed
+ * their "[n] pid" line, so that line always comes first. This lets them go:
+ * the reader loop calls it before running a foreground group and at the end
+ * of every input line. */
+void exec_release_background(void);
 
 #endif /* CSHELL_EXEC_H */
