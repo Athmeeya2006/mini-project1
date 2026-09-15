@@ -17,5 +17,7 @@ int builtin_locate(int argc, char **argv);
 int builtin_activities(int argc, char **argv);
 int builtin_resume(int argc, char **argv);
 int builtin_ping(int argc, char **argv);
+int builtin_spy(int argc, char **argv);
+int builtin_snoop(int argc, char **argv);
 
 #endif /* CSHELL_BUILTINS_H */

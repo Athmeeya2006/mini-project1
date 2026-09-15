@@ -6,5 +6,18 @@ c-shell/shell.out
 # local test harness (not part of the submission)
 tests/
 
+# xv6 build artefacts
+*.d
+*.asm
+*.sym
+xv6/kernel/kernel
+xv6/fs.img
+xv6/mkfs/mkfs
+xv6/user/_*
+xv6/user/usys.S
+xv6/user/initcode
+xv6/user/initcode.out
+.gdbinit
+
 # frecency store created at runtime
 .cshell_frecency

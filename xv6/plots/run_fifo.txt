@@ -1,0 +1,17 @@
+child 0 pid 4
+child 1 pid 5
+child 2 pid 6
+child 3 pid 7
+child 4 pid 8
+
+pid  turnaround  waiting  response
+4    62          0       0
+6    97          62       62
+8    161          99       99
+7    198          175       98
+5    204          196       62
+
+average turnaround 144.4
+average waiting    106.4
+average response   64.2
+total ticks        204

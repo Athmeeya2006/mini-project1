@@ -322,6 +322,70 @@ sent `SIGSTOP` or `SIGCONT` shows up as stopped or running again in
 `activities`, because the reaper already watches for both, and one that is
 killed is announced as having exited abnormally.
 
+### Part F1: spy
+
+`spy [pid]` lists the open files of a process, the shell's own when no pid is
+given. Everything comes from `/proc`: the working directory and the executable
+are symbolic links, the mapped files are the sixth field of each line of
+`maps`, and the descriptors are one symbolic link each in `fd`. `readlink`
+gives what each of them points at, and `stat` on the `/proc` link, which
+follows through to the object itself, gives what kind of thing it is.
+
+The executable is both `txt` and one of the mapped files, so it is skipped in
+the mapped list; the rest are printed once each, and lines with no file behind
+them, such as `[heap]` or an anonymous mapping, are left out. A file that has
+been deleted or replaced since it was mapped is marked as such in `maps`; the
+mark is not part of the path, so it is cut off before the path is used, and a
+mapping whose file can no longer be found is still a regular file, since only a
+file can be mapped.
+
+Some descriptors point at something with no path at all - an eventfd, an epoll
+set, a timer - and `stat` cannot reach those from outside the process. What
+they are is then read off the link itself, which is also where a socket or a
+pipe gives itself away. Descriptors are listed in numeric order, so 2 comes
+before 10.
+
+A pid that has no directory under `/proc` is `spy: no such process`, and more
+than one pid is `spy: invalid syntax`. Checked against `lsof -p` on the same
+process, the two agree entry for entry and type for type, apart from `rtd`,
+which the assignment does not ask for, and the network detail it puts out of
+scope.
+
+### Part F2: snoop
+
+`snoop command [args...]` traces a command from its very first instruction: the
+child asks to be traced with `PTRACE_TRACEME` and then execs, so the exec
+itself is the first stop the shell sees and nothing the command does is missed.
+`snoop -p pid` attaches to something already running instead.
+
+From there the tracee is let go one system call at a time with
+`PTRACE_SYSCALL`, which stops it twice per call, once going in and once coming
+back. `PTRACE_O_TRACESYSGOOD` marks those stops as `SIGTRAP|0x80`, which is
+what tells them apart from a `SIGTRAP` the program raised itself; any other
+signal is simply passed on. The call number is read out of `orig_rax` on the
+way in, along with a `CLOCK_MONOTONIC` timestamp, and the matching timestamp on
+the way back gives the time that call took. Counting happens on the way in, so
+a call that never returns - `exit_group` above all - is still counted, with no
+time against it.
+
+The summary is printed busiest first, ties going to whichever call was seen
+first. Names come from a table generated from the kernel's own
+`asm/unistd_64.h`, and a number that is not in it prints as `syscall_N`, so a
+newer kernel still traces correctly. On anything other than x86_64 the
+numbering would be someone else's, so every call is reported by number.
+
+The shell's own reaper is held off for the whole trace, or it would take the
+stops the tracer is waiting for; and when the traced process is one of the
+shell's own jobs, its entry is closed off by hand afterwards, since the reaper
+was not the one to wait for it. A stop signal is not passed on: it would put
+the tracee in a group stop that only its tracer could lift, so Ctrl-Z does
+nothing to something being traced, while Ctrl-C ends it and the summary is
+printed for what it did before it died.
+
+Counts were checked against `strace -c` on the same command and agree call for
+call; `strace` additionally counts the `execve` it traced through, which is the
+one stop this consumes to get started.
+
 ### Source layout
 
 | File | Does |
@@ -332,16 +396,33 @@ killed is announced as having exited abnormally.
 | `src/lexer.c` | line to tokens |
 | `src/parser.c` | tokens to pipelines and commands |
 | `src/builtins.c` | intrinsic dispatch |
-| `src/b_hop.c`, `src/b_reveal.c`, `src/b_peek.c`, `src/b_locate.c`, `src/b_activities.c`, `src/b_resume.c`, `src/b_ping.c` | one intrinsic each |
+| `src/b_hop.c`, `src/b_reveal.c`, `src/b_peek.c`, `src/b_locate.c`, `src/b_activities.c`, `src/b_resume.c`, `src/b_ping.c`, `src/b_spy.c`, `src/b_snoop.c` | one intrinsic each |
 | `src/frecency.c` | the frequency and recency store used by `hop` |
 | `src/redirect.c` | opening redirection targets |
 | `src/exec.c` | command lookup, fork, pipes, process groups, wait |
 | `src/jobs.c` | the job table and the `SIGCHLD` reaper |
+| `include/syscalls.h` | the x86_64 syscall names, generated from `asm/unistd_64.h` |
 | `src/pathutil.c`, `src/utils.c` | shared helpers |
 
 ## xv6
 
-See [xv6/report.md](xv6/report.md).
+A multi level feedback queue scheduler, chosen when the kernel is built:
+
+```
+cd xv6
+make clean; make qemu                  # round robin, the original scheduler
+make clean; make qemu SCHEDULER=MLFQ   # multi level feedback queue
+make clean; make qemu SCHEDULER=FIFO   # first come first served
+```
+
+`make clean` is not optional between policies, since make cannot see that the
+flags changed and would otherwise link the old objects.
+
+`user/schedulertest.c` is the workload the scheduler is measured with, and
+`plots/` holds the runs it produced, the two python scripts that draw the
+figures, and the figures themselves. The write up, including the timeline of
+which queue each process was in and the comparison of the three policies, is
+in [xv6/report.md](xv6/report.md).
 
 ## Notes
 

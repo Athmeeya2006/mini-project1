@@ -194,6 +194,29 @@ Job *jobs_find_pid(pid_t pid)
     return NULL;
 }
 
+void jobs_mark_exited(pid_t pid)
+{
+    sigset_t saved;
+
+    jobs_block(&saved);
+    for (int i = 0; i < JOBS_MAX; i++) {
+        Job *j = &g_jobs[i];
+
+        if (!j->used)
+            continue;
+        for (int k = 0; k < j->nprocs; k++) {
+            if (j->procs[k].pid != pid || j->procs[k].state == PROC_DONE)
+                continue;
+            j->procs[k].state = PROC_DONE;
+            j->ndone++;
+            /* Nobody is left to announce it, and it has been reported on by
+             * whoever was waiting for it. */
+            j->notify = 0;
+        }
+    }
+    jobs_unblock(&saved);
+}
+
 void jobs_mark_stopped(Job *j)
 {
     if (j == NULL)

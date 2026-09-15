@@ -65,6 +65,10 @@ void jobs_remove(Job *j);
 Job *jobs_find_number(int number);
 Job *jobs_find_pid(pid_t pid);
 
+/* Note that a process has gone when something other than the reaper was the
+ * one to wait for it, so the job it belongs to does not linger. */
+void jobs_mark_exited(pid_t pid);
+
 /* Mark every process of a job that has not exited as stopped, or as running
  * again after a SIGCONT. */
 void jobs_mark_stopped(Job *j);
