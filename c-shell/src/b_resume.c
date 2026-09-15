@@ -95,7 +95,7 @@ static int resume_fg(Job *j, int has_timeout, long seconds)
 {
     struct sigaction sa, old_sa;
     sigset_t         saved;
-    int              status = 0, stopped, interrupted = 0;
+    int              status = 0, stopped, interrupted = 0, timed_out;
 
     /* Exactly what a foreground launch shows. */
     printf("%s\n", j->cmd);
@@ -132,7 +132,16 @@ static int resume_fg(Job *j, int has_timeout, long seconds)
     if (g_shell.interactive)
         tcsetpgrp(g_shell.terminal_fd, g_shell.pgid);
 
-    if (g_timed_out) {
+    if (interrupted) {
+        putchar('\n');
+        fflush(stdout);
+    }
+
+    /* The timer can go off in the moment between the job finishing or
+     * stopping and the timer being taken down; that is not a timeout. */
+    timed_out = g_timed_out && !stopped && j->ndone < j->nprocs;
+
+    if (timed_out) {
         kill(-j->pgid, SIGTERM);
         err_printf("resume: job timed out");
         /* It has been killed, so it is no longer a job. Its children are
@@ -146,11 +155,6 @@ static int resume_fg(Job *j, int has_timeout, long seconds)
         jobs_remove(j);
     }
     jobs_unblock(&saved);
-
-    if (interrupted) {
-        putchar('\n');
-        fflush(stdout);
-    }
     return status;
 }
 
@@ -180,7 +184,7 @@ int builtin_resume(int argc, char **argv)
         return 1;
     }
     number = parse_nonneg(argv[1] + 1);
-    if (number <= 0) {
+    if (number < 0) {
         err_printf("resume: invalid syntax");
         return 1;
     }
@@ -206,7 +210,7 @@ int builtin_resume(int argc, char **argv)
     }
 
     jobs_block(&saved);
-    j = jobs_find_number((int)number);
+    j = jobs_find_number(number);
     if (j == NULL || j->pgid <= 0) {
         jobs_unblock(&saved);
         err_printf("resume: no such job");

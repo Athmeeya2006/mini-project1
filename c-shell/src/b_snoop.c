@@ -91,6 +91,21 @@ static double now_seconds(void)
     return (double)ts.tv_sec + (double)ts.tv_nsec / 1e9;
 }
 
+/* Whether a syscall stop is the way in rather than the way out. */
+static int at_syscall_entry(pid_t pid)
+{
+#if defined(__x86_64__)
+    struct user_regs_struct regs;
+
+    if (ptrace(PTRACE_GETREGS, pid, 0, &regs) != 0)
+        return 1;
+    return (long)regs.rax == -ENOSYS;
+#else
+    (void)pid;
+    return 1;
+#endif
+}
+
 /* The number of the call the tracee is stopped on. */
 static long syscall_number(pid_t pid)
 {
@@ -121,9 +136,10 @@ static void report(void)
 
 /* Run the tracee until it is gone, counting and timing every call on the way.
  * The tracee is already stopped when this is entered. */
-static void trace_loop(pid_t pid)
+static void trace_loop(pid_t pid, int attached)
 {
     int    in_syscall = 0;
+    int    first_stop = attached;
     int    deliver = 0;
     long   pending_nr = -1;
     double entered_at = 0.0;
@@ -147,6 +163,17 @@ static void trace_loop(pid_t pid)
             return;
 
         if (WSTOPSIG(status) == SYSCALL_STOP_SIG) {
+            if (first_stop) {
+                first_stop = 0;
+                /* A process attached to in the middle of a call (sleeping
+                 * in one, most likely) stops first on that call's way out.
+                 * On entry the kernel has already put -ENOSYS in the return
+                 * register, so anything else there is an exit, whose entry
+                 * was never seen: it is not counted, and the next stop is an
+                 * entry again. */
+                if (!at_syscall_entry(pid))
+                    continue;
+            }
             if (!in_syscall) {
                 Call *c = call_for(syscall_number(pid));
 
@@ -203,7 +230,7 @@ static int snoop_attach(pid_t pid)
             return 1;
         }
     }
-    trace_loop(pid);
+    trace_loop(pid, 1);
     /* The shell was not the one to reap it, so its job entry is put right. */
     jobs_mark_exited(pid);
     report();
@@ -239,6 +266,8 @@ static int snoop_command(int argc, char **argv)
         signal(SIGTTIN, SIG_DFL);
         signal(SIGTTOU, SIG_DFL);
         signal(SIGCHLD, SIG_DFL);
+        signal(SIGHUP, SIG_DFL);
+        signal(SIGTERM, SIG_DFL);
 
         /* Ask to be traced, then exec: the first stop is the exec itself, so
          * nothing the command does is missed. */
@@ -259,7 +288,7 @@ static int snoop_command(int argc, char **argv)
     if (WIFEXITED(status)) /* it never got as far as the exec */
         return WEXITSTATUS(status);
 
-    trace_loop(pid);
+    trace_loop(pid, 0);
     report();
     return 0;
 }

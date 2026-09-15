@@ -41,6 +41,13 @@ replaced by `~` when the working directory sits below it. Anywhere else the full
 path is printed. The hostname is cut at the first dot. Input is read one line at
 a time, up to 1024 characters.
 
+The line is read with `read()` rather than stdio. A stdio read that a signal
+interrupts throws away the part of the line it had already taken, and on a pipe
+it reads ahead past the current line into input meant for the commands the shell
+runs, such as `peek -`. A terminal hands back a line per read anyway; from
+anything else the shell reads a byte at a time, so it never takes more than the
+one line.
+
 Lexing is done in a single left to right pass with a small state machine, one
 state for each context: between tokens, inside a word, inside single quotes,
 inside double quotes, and after a backslash. Quotes and escapes are resolved
@@ -70,10 +77,14 @@ contains that name. Ranking uses frequency and recency together: every visit add
 one to a directory's count, and that count is then scaled up or down by how long
 ago the directory was last used, so a directory visited in the last hour beats
 one last used a month ago. Ties break lexicographically so the result is
-deterministic. The store is a text file, `.cshell_frecency`, kept in the shell's
-home directory, so it survives between sessions.
+deterministic. The store is a text file, `.cshell_frecency`, kept in the user's
+real home directory (`$HOME`), so every session shares it wherever it was
+started, and it never shows up in a directory being listed. It is written to a
+temporary file and renamed into place, so a shell that dies half way through a
+save cannot leave a truncated store behind.
 
-`reveal` lists a directory. `-a` shows dotfiles but never `.` and `..`, which
+`reveal` lists a directory, one entry per line and exactly as named, the way
+`ls` prints when its output is not a terminal. `-a` shows dotfiles but never `.` and `..`, which
 also keeps the recursive listing from looping. `-t` walks the tree depth first,
 printing each directory before its contents and marking directories with a
 trailing slash. Sorting is done on the plain name, before the slash is added.
@@ -83,7 +94,9 @@ pointing at its own ancestor cannot hang the listing. Flags can be repeated and
 split across arguments but have to come before the path.
 
 `peek` prints files. `-n` numbers the non empty lines, and the count carries on
-across all the files given rather than restarting. `-r` prints a file's lines in
+across all the files given rather than restarting. A file without a final
+newline runs straight into the next one, as with `cat`, so the start of the next
+file continues that line rather than getting a number of its own. `-r` prints a file's lines in
 reverse while keeping each line's original number, so reversing changes only the
 order they appear in. Regular files are never read whole. Forward reading, line
 counting and the backward pass all work in 4 KiB chunks. The backward pass seeks
@@ -143,10 +156,13 @@ is reported as `cshell: command not found (name)`. A command that did start and
 then exited with a non-zero status has not failed, so the sequence carries on.
 
 To tell those two cases apart the shell has to know whether a command exists
-before it forks, so names are now resolved in the parent rather than in the
-child. A group whose name cannot be resolved is not started at all, not even
-partially, which is also why a pipeline with one unknown stage runs none of its
-stages: the whole group is one `shell_cmd` and either starts or does not.
+before it forks, so names are resolved in the parent rather than in the child.
+A lone command whose name cannot be resolved is not started at all, and that
+stops the sequence. A pipeline is different, as Part C4 says: an unknown stage
+is reported, still gets its place in the pipeline as a process that exits
+straight away, so its neighbours see end of file on their pipes, and the rest
+of the pipeline runs. That does not count as a failure to start, so
+`badcmd | sort ; echo world` still prints `world`.
 
 A group followed by `&` is launched and left running, and the shell announces it
 as `[job_number] pid`. Job numbers come from a counter that only goes up, so a
@@ -168,7 +184,9 @@ Each background group is put in a process group of its own with `setpgid`,
 called in both the parent and the child so neither can race the other. The
 terminal stays with the shell's own group, so a background process that tries to
 read from the terminal is sent `SIGTTIN` and stops instead of stealing the
-user's input.
+user's input. When the shell's input is not a terminal there is no `SIGTTIN`,
+so the first stage of a background group reads from `/dev/null` instead, rather
+than eating the lines the shell itself still has to read.
 
 Completions are noticed by a `SIGCHLD` handler. It reaps with `WNOHANG`, so the
 shell never blocks in it, and with `WUNTRACED`, so a job stopped by the terminal
@@ -188,13 +206,17 @@ that group has been waited for. That keeps the handler from reaping a child the
 shell is about to wait for itself, and it is also what the specification asks
 for: a background job that finishes while a foreground job is running is only
 reported once the foreground job is done, because the signal is delivered when
-the shell unblocks it. The mask is cleared again in every child, since it would
-otherwise survive `exec`.
+the shell unblocks it. An intrinsic that runs inside the shell is a foreground
+command too, so the signal is blocked around it in the same way; that also
+keeps `peek` reading from the terminal from being cut short by a job finishing
+behind it. The mask is cleared again in every child, since it would otherwise
+survive `exec`.
 
 A job that finishes while the shell is waiting for input is reported straight
 away. The handler is deliberately installed without `SA_RESTART`, so the read at
 the prompt comes back with `EINTR`, the message appears on a line of its own,
-and the prompt is drawn again underneath it.
+and the prompt is drawn again underneath it, followed by anything that had
+already been typed on the line.
 
 ### Part E1: activities
 
@@ -269,7 +291,9 @@ line that is actually run clears the warning again. On the way out the shell
 sends `SIGHUP` to the process group of every job it still has on the books and
 does not wait for any of them. A stopped process would not see that signal
 until something got it running again, so a stopped group is sent `SIGCONT`
-after it.
+after it. The same happens when the shell itself is sent `SIGHUP`, as when its
+terminal is closed, or `SIGTERM`: both are caught and make the shell leave
+through the same path.
 
 ### Part E3: resume
 
@@ -297,7 +321,8 @@ a job that finishes or stops first cancels it. When it does fire, the job's
 group is sent `SIGTERM`, `resume: job timed out` is printed, and the job leaves
 the table, since it has been killed rather than stopped. Its children are
 reaped by the `SIGCHLD` handler once the signal is unblocked, which is also why
-they leave no zombies behind.
+they leave no zombies behind. A timer that goes off in the instant between the
+job finishing or stopping and the timer being taken down is not a timeout.
 
 ### Part E4: ping
 
@@ -308,7 +333,8 @@ process in that job's group; a plain number is a pid.
 The signal is checked before the target is looked up, so `ping 99999 abc` is a
 syntax error rather than an unknown process. It has to be a whole non-negative
 number, which makes a negative one a syntax error rather than something to be
-reduced by the modulo. What is actually sent is that number modulo 64, but the
+reduced by the modulo. Any run of digits counts, however long, since the modulo
+is taken digit by digit. What is actually sent is that number modulo 64, but the
 message always echoes what the user typed, so `ping 4030 79` says `Sent signal
 79 to 4030` and sends signal 15.
 
@@ -362,7 +388,11 @@ From there the tracee is let go one system call at a time with
 `PTRACE_SYSCALL`, which stops it twice per call, once going in and once coming
 back. `PTRACE_O_TRACESYSGOOD` marks those stops as `SIGTRAP|0x80`, which is
 what tells them apart from a `SIGTRAP` the program raised itself; any other
-signal is simply passed on. The call number is read out of `orig_rax` on the
+signal is simply passed on. When attaching to a process that is in the middle of
+a call, as a sleeping one is, the first stop is that call's way out, whose way
+in was never seen; the kernel puts `-ENOSYS` in `rax` on every way in, so that
+first stop is recognised and skipped instead of throwing the in and out pairing
+off for the rest of the trace. The call number is read out of `orig_rax` on the
 way in, along with a `CLOCK_MONOTONIC` timestamp, and the matching timestamp on
 the way back gives the time that call took. Counting happens on the way in, so
 a call that never returns - `exit_group` above all - is still counted, with no

@@ -1,6 +1,7 @@
 #include "utils.h"
 
 #include <errno.h>
+#include <limits.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -37,16 +38,30 @@ char *xstrdup(const char *s)
 
 long parse_nonneg(const char *s)
 {
-    char *end;
-    long  v;
+    long v = 0;
 
     if (s == NULL || s[0] == '\0')
         return -1;
-    errno = 0;
-    v = strtol(s, &end, 10);
-    if (errno != 0 || *end != '\0' || v < 0)
-        return -1;
+    /* Digits and nothing else: strtol would also take a sign or leading
+     * blanks, which are not part of a plain number. */
+    for (const char *p = s; *p != '\0'; p++) {
+        if (*p < '0' || *p > '9')
+            return -1;
+        if (v > (LONG_MAX - (*p - '0')) / 10)
+            return -1; /* too big to represent */
+        v = v * 10 + (*p - '0');
+    }
     return v;
+}
+
+int is_digits(const char *s)
+{
+    if (s == NULL || s[0] == '\0')
+        return 0;
+    for (const char *p = s; *p != '\0'; p++)
+        if (*p < '0' || *p > '9')
+            return 0;
+    return 1;
 }
 
 void buf_init(Buf *b)

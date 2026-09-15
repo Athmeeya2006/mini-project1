@@ -46,11 +46,15 @@ static char *display_path(void)
     if (strcmp(cwd, g_shell.home) == 0) {
         disp = xstrdup("~");
     } else if (strncmp(cwd, g_shell.home, hlen) == 0 &&
-               (cwd[hlen] == '/' || (hlen == 1 && g_shell.home[0] == '/'))) {
-        Buf b;
+               (cwd[hlen] == '/' || strcmp(g_shell.home, "/") == 0)) {
+        /* When home is "/" itself its prefix has no separator after it, so
+         * the whole path is kept to give "~/usr" rather than "~usr". */
+        const char *rest = strcmp(g_shell.home, "/") == 0 ? cwd : cwd + hlen;
+        Buf         b;
+
         buf_init(&b);
         buf_push(&b, '~');
-        buf_append(&b, cwd + hlen, strlen(cwd + hlen));
+        buf_append(&b, rest, strlen(rest));
         disp = buf_release(&b);
     } else {
         disp = xstrdup(cwd);

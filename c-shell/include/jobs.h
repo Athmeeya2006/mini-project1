@@ -15,7 +15,7 @@
 #include "redirect.h"
 
 #define JOBS_MAX      64
-#define JOB_PROCS_MAX 16
+#define JOB_PROCS_MAX 64
 #define JOB_NAME_MAX  64
 #define JOB_CMD_MAX   512
 
@@ -62,12 +62,16 @@ void jobs_remove(Job *j);
 
 /* The job with this number, or the one holding this pid, or NULL. Only
  * processes that have not exited count. Must run with SIGCHLD blocked. */
-Job *jobs_find_number(int number);
+Job *jobs_find_number(long number);
 Job *jobs_find_pid(pid_t pid);
 
 /* Note that a process has gone when something other than the reaper was the
  * one to wait for it, so the job it belongs to does not linger. */
 void jobs_mark_exited(pid_t pid);
+
+/* The shell itself has just reaped `pid`, a process of `j`, with wait status
+ * `wstatus`. Must run with SIGCHLD blocked; `j` may be NULL. */
+void jobs_proc_exited(Job *j, pid_t pid, int wstatus);
 
 /* Mark every process of a job that has not exited as stopped, or as running
  * again after a SIGCONT. */

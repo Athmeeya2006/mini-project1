@@ -8,15 +8,19 @@
  *   < 1 week             -> rank / 2       older    -> rank / 4
  *
  * Ties are broken lexicographically so the result is fully deterministic.
- * The store lives in the directory the shell was started from, so it survives
- * across sessions launched there.
+ * The store lives in the user's home directory ($HOME, or the password
+ * database's idea of it), so it is shared by every session wherever it was
+ * started, and never shows up in the directories being listed. Only when
+ * neither is usable does it fall back to the shell's own home.
  */
 #include "frecency.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <pwd.h>
 #include <time.h>
+#include <unistd.h>
 
 #include "pathutil.h"
 #include "shell.h"
@@ -37,6 +41,15 @@ static int    loaded;
 
 static char *store_path(void)
 {
+    const char    *home = getenv("HOME");
+    struct passwd *pw;
+
+    if (home != NULL && home[0] == '/' && path_is_dir(home))
+        return path_join(home, FRECENCY_FILE);
+    pw = getpwuid(getuid());
+    if (pw != NULL && pw->pw_dir != NULL && pw->pw_dir[0] == '/' &&
+        path_is_dir(pw->pw_dir))
+        return path_join(pw->pw_dir, FRECENCY_FILE);
     return path_join(g_shell.home, FRECENCY_FILE);
 }
 
@@ -92,18 +105,29 @@ void frecency_init(void)
     fclose(f);
 }
 
+/* Written to a temporary file and renamed over the store, so a shell that dies
+ * half way through, or two sessions saving at once, can never leave a
+ * truncated store behind. */
 static void frecency_save(void)
 {
     char *file = store_path();
-    FILE *f    = fopen(file, "w");
+    char  tmp[PATH_MAX + 32];
+    FILE *f;
 
-    free(file);
-    if (f == NULL)
+    snprintf(tmp, sizeof tmp, "%s.%ld.tmp", file, (long)getpid());
+    f = fopen(tmp, "w");
+    if (f == NULL) {
+        free(file);
         return; /* a read-only home means no persistence */
+    }
     for (size_t i = 0; i < n_entries; i++)
         fprintf(f, "%.4f\t%ld\t%s\n", entries[i].rank, entries[i].last,
                 entries[i].path);
-    fclose(f);
+    if (fclose(f) == 0)
+        rename(tmp, file);
+    else
+        unlink(tmp);
+    free(file);
 }
 
 void frecency_record(const char *abs_path)
@@ -111,6 +135,9 @@ void frecency_record(const char *abs_path)
     long now = (long)time(NULL);
 
     frecency_init();
+    /* One line per entry, so a name with a newline in it cannot be stored. */
+    if (strchr(abs_path, '\n') != NULL)
+        return;
     for (size_t i = 0; i < n_entries; i++) {
         if (strcmp(entries[i].path, abs_path) == 0) {
             entries[i].rank += 1.0;

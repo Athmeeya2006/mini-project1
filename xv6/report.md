@@ -18,7 +18,9 @@ the original round robin path. `FIFO` is there because section 2.2 wants the
 three policies compared on the same workload, and it is the scheduler from the
 homework 2 exercise. The `make clean` matters: make cannot see that `CFLAGS`
 changed, so without it the old objects are linked and the kernel keeps whatever
-policy it was last built with.
+policy it was last built with. Any other value, such as a misspelt
+`SCHEDULER=mlfq`, stops the build with an error instead of quietly producing a
+round robin kernel.
 
 Everything below was measured with one CPU, `CPUS=1`. Scheduling is much easier
 to read that way, and with three CPUs and five test processes the machine is
@@ -32,6 +34,9 @@ Three lines next to the rest of the `CFLAGS`:
 
 ```make
 ifdef SCHEDULER
+ifeq ($(filter $(SCHEDULER),MLFQ FIFO),)
+$(error SCHEDULER must be MLFQ or FIFO (or left unset for round robin), not '$(SCHEDULER)')
+endif
 CFLAGS += -D$(SCHEDULER)
 endif
 ```
@@ -55,8 +60,8 @@ CPU), `sltime` (ticks spent asleep) and `first_run` (the tick it first got a
 CPU, or -1 until then).
 
 The second is its place in the queuing network: `qlevel`, the queue it is in,
-`qticks`, how much of that queue's slice it has used, `qstart`, the tick its
-current run began on, and `qseq`, its place in the queue. The fields are declared in every build so that `struct proc` does
+`qticks`, how much of that queue's slice it has used, and `qseq`, its place in
+the queue. The fields are declared in every build so that `struct proc` does
 not change shape between policies, but only an MLFQ kernel ever touches them.
 
 The queues themselves are deliberately not four lists of process pointers. Each
@@ -117,32 +122,26 @@ tick by `update_time()`, called from `clockintr()` on CPU 0 only: it walks the
 process table and, for each process, adds a tick to `rtime` and to `qticks` if
 it is running, to `wtime` if it is runnable, and to `sltime` if it is asleep.
 Doing it from one CPU means a process running on any CPU is charged exactly
-once per tick.
+once per tick. Every tick that ends with the process on a CPU counts against
+its slice, and being preempted by something more urgent does not give those
+ticks back, so a process that keeps getting pushed aside still uses its slice
+up and is demoted on schedule.
 
-A tick is only charged against the slice if the process held the CPU for the
-whole of it, which is what `qstart`, the tick the current run began on, is
-for. Without that check a process that is given the CPU part way through a
-tick, runs for a few microseconds and is still there when the interrupt lands
-is billed for a whole slice. At queue 0, where the slice is one tick, that is
-enough to demote it immediately. It is not a small detail: `init` wakes up,
-reaps a zombie and sleeps again in far less than a tick, and with the naive
-charge it eventually gets demoted to queue 1, where strict priority keeps it
-behind every newly forked process in queue 0. The `reparent` test in
-`usertests`, which creates orphans in a tight loop, then fills the process
-table before `init` gets another turn, and fails. With the check it passes
-every time. `rtime`, which is a statistic rather than policy, is still charged
-the ordinary way.
-
-Queue 3 is the bottom of the network, so a process that uses its slice there is
-put back at the end of queue 3 rather than demoted any further, which is round
-robin with a 16 tick quantum.
+`mlfq_on_timer()` then compares `qticks` with the slice of the process's queue
+on the same tick, so a process in queue 0 gives up the CPU at the first tick
+boundary it reaches, one in queue 1 after four, and so on. Queue 3 is the
+bottom of the network, so a process that uses its slice there is put back at
+the end of queue 3 rather than demoted any further, which is round robin with a
+16 tick quantum.
 
 ### Voluntary yield
 
 A process that sleeps leaves the queuing network entirely: the scheduler only
 ever looks at runnable processes, so nothing else is needed. When it is woken,
 `wakeup()` gives it a new `qseq` and leaves `qlevel` alone, which puts it at
-the tail of the queue it left, at the priority it left with.
+the tail of the queue it left, at the priority it left with. `kill()` waking a
+sleeping process does the same, so a killed process does not jump the queue on
+its way out.
 
 The slice it had started is over when it goes to sleep, so `qticks` is reset
 there. It is not reset when the process is pushed aside by something more
@@ -174,24 +173,26 @@ to the bottom; the plot below shows the effect clearly.
 `procdump()`, on Ctrl-P, now prints the running, waiting and sleeping totals
 for every process, and in an MLFQ kernel also the queue it is in, how much of
 that queue's slice it has used, and how many ticks are left before the next
-boost. Taken in the middle of a `schedulertest` run:
+boost. Taken four seconds into a `schedulertest` run:
 
 ```
-1 sleep  init q0 slice 0/1 boost_in 28 run 0 wait 1 sleep 67
-2 sleep  sh q0 slice 0/1 boost_in 28 run 0 wait 0 sleep 67
-3 sleep  schedulertest q0 slice 0/1 boost_in 28 run 0 wait 0 sleep 60
-4 runble schedulertest q2 slice 0/8 boost_in 28 run 18 wait 42 sleep 0
-6 runble schedulertest q2 slice 0/8 boost_in 28 run 18 wait 42 sleep 0
-7 runble schedulertest q1 slice 0/4 boost_in 28 run 11 wait 49 sleep 0
-8 run    schedulertest q1 slice 0/4 boost_in 28 run 13 wait 47 sleep 0
+1 sleep  init q0 slice 0/1 boost_in 25 run 0 wait 1 sleep 118
+2 sleep  sh q0 slice 0/1 boost_in 25 run 1 wait 0 sleep 117
+3 sleep  schedulertest q0 slice 0/1 boost_in 25 run 0 wait 0 sleep 40
+4 runble schedulertest q2 slice 0/8 boost_in 25 run 10 wait 30 sleep 0
+5 run    schedulertest q0 slice 0/1 boost_in 25 run 0 wait 40 sleep 0
+6 runble schedulertest q2 slice 1/8 boost_in 25 run 11 wait 29 sleep 0
+7 runble schedulertest q1 slice 2/4 boost_in 25 run 10 wait 30 sleep 0
+8 runble schedulertest q2 slice 0/8 boost_in 25 run 9 wait 31 sleep 0
 ```
 
-`boost_in 28` says the snapshot was taken 20 ticks after a boost, which is why
-nothing has reached the bottom queue yet: the test processes have sunk to
-queues 1 and 2 in proportion to how much CPU each of them has had, while the
-shell and init, which have done nothing but sleep since they started, are still
-at the top with no CPU time at all. The queue columns are left out of a round
-robin or first come first served build, where they would mean nothing.
+`boost_in 25` puts the snapshot 23 ticks after a boost. The three processes
+that only compute have had about ten ticks each and sit in queue 2, pid 7, which
+sleeps between short bursts, has used two ticks of its queue 1 slice, and pid 5,
+which barely computes at all, is still in queue 0. The shell and init, which
+have only slept, are at the top with no CPU time. The queue columns are left out
+of a round robin or first come first served build, where they would mean
+nothing.
 
 ### Two new system calls
 
@@ -223,27 +224,21 @@ woken, B boosted, E exited.
 
 ![MLFQ timeline](plots/mlfq_timeline.png)
 
-Everything starts in queue 0 and the three processes that only compute are out
-of it almost at once, since queue 0 hands out a single tick; they fall through
-queues 1 and 2 at the rate their slices allow and end up in queues 2 and 3,
-where they share the CPU round robin. Process 5, which works for half a tick
-and then sleeps, never uses a whole slice, so it is never demoted and stays in
-queue 0 for its whole life, which is exactly what a multi level feedback queue
-is for: it is the process a user would be waiting on, and it is always at the
-head of the line. Process 7 is the interesting one in between. It works for two
-ticks and then sleeps for one, which is more than queue 0 hands out but less
-than queue 1 does, so it is demoted exactly once and then sits in queue 1 for
-the rest of its life, above the three that only compute and below the one that
-barely uses the CPU at all. The dashed lines at 48, 96, 144 and 192 are the
-boosts: everything jumps back to queue 0 at once and the whole pattern of
-sinking starts again, which is what stops the long computing processes from
-being starved by the shorter ones. The sawtooth between boosts also shows why
-the interval matters, since a process demoted to queue 3 just before a boost
-gets its priority back for free.
+The three processes that only compute (pids 4, 6 and 8) are CPU bound: each
+leaves queue 0 after one tick, queue 1 after four and queue 2 after eight, and
+ends up sharing queue 3 round robin. Pid 5 is I/O bound, never uses a whole
+tick before sleeping, and so stays in queue 0 for its whole life, while pid 7,
+with two tick bursts, drops once and then settles in queue 1. The dashed lines
+at 48, 96, 144 and 192 are the boosts, where every live process jumps back to
+queue 0 and the sinking starts again. That is what keeps the CPU bound
+processes from starving behind the other two: after each boost they get a run
+at the top before sinking back down.
 
 ## 3. Cross scheduler comparison
 
-Same workload, same machine, one CPU, one run each.
+Same workload, same machine, one CPU, one run each. Timer interrupts in qemu
+are not perfectly regular, so repeated runs move by a few ticks, but the order
+of the three policies does not change.
 
 ![scheduler comparison](plots/scheduler_comparison.png)
 
@@ -251,55 +246,35 @@ Same workload, same machine, one CPU, one run each.
 | --- | --- | --- | --- |
 | FIFO | 144.4 | 106.4 | 64.2 |
 | RR | 141.8 | 102.8 | 1.4 |
-| MLFQ | 133.2 | 94.2 | 2.6 |
+| MLFQ | 119.8 | 80.8 | 1.4 |
 
 Per process, in ticks:
 
 | | pid 4 (cpu) | pid 5 (i/o) | pid 6 (cpu) | pid 7 (mixed) | pid 8 (cpu) |
 | --- | --- | --- | --- | --- | --- |
-| FIFO turnaround | 62 | 204 | 97 | 198 | 161 |
+| FIFO turnaround | 61 | 203 | 97 | 198 | 163 |
 | RR turnaround | 183 | 71 | 146 | 114 | 195 |
-| MLFQ turnaround | 195 | 50 | 154 | 86 | 181 |
-| FIFO response | 0 | 62 | 62 | 98 | 99 |
+| MLFQ turnaround | 195 | 42 | 117 | 68 | 177 |
+| FIFO response | 0 | 61 | 62 | 97 | 101 |
 | RR response | 0 | 1 | 1 | 2 | 3 |
-| MLFQ response | 0 | 2 | 2 | 4 | 5 |
+| MLFQ response | 0 | 1 | 1 | 2 | 3 |
 
-One CPU has a fixed amount of work to get through and every policy has to run
-all of it, so the totals cannot move much: the three runs finish in 195, 195
-and 204 ticks. What a scheduler changes is who waits and for how long. FIFO is
-the outlier on response time, 64.2 ticks against 1.4 and 2.6, because it never
-takes the CPU away: the first process to arrive holds it for its whole 62 tick
-burst and nothing else, not even a process that wants half a tick, gets a look
-in until it is done. That is the convoy effect, and it produces the worst
-single number in the table, the I/O bound process taking 204 ticks to do about
-10 ticks of real work. FIFO does win on the one count it always wins: the
-process at the front finishes as fast as it possibly can, 62 ticks with no
-waiting at all, because nothing is allowed to interleave with it.
-
-Round robin buys back response time by taking the CPU away every tick, and pays
-for it in context switches. Its waiting time is roughly the quantum times the
-number of other runnable processes, so a shorter quantum improves
-responsiveness and costs more switching, and a longer one does the reverse
-until, in the limit, it is FIFO again. MLFQ is 6 percent better than round
-robin on turnaround and 8 percent better on waiting, and the average undersells
-where that comes from: the I/O bound process finishes in 50 ticks against 71,
-and the one that alternates work and sleep in 86 against 114, because MLFQ
-works out from their behaviour that they are short and interactive and leaves
-them near the top of the network, while round robin insists on treating all
-five as equals. The three that only compute pay for it, and mostly do not mind,
-because they get the CPU in 8 and 16 tick chunks at the bottom instead of one
-tick at a time, which is fewer switches for the same work.
-
-MLFQ's response time, 2.6 ticks, is the one number where it comes second, and
-it is the price of the slice accounting rather than of the policy: a process
-gets a full tick of CPU at queue 0 before it can be demoted, so when five
-processes are created at once the last of them waits a couple of ticks longer
-for its first turn than it would under a scheduler that rotates every tick
-regardless. Against FIFO's 64.2 it is noise. The boost is what keeps the
-bottom of the network from starving, and it is the one number in the policy
-that has to be tuned against the workload rather than derived from it: too
-often and the queues stop meaning anything, too rarely and whatever has sunk to
-queue 3 waits a long time for its turn.
+FIFO has by far the worst response time, 64.2 ticks, because it never preempts:
+the first process holds the CPU for its whole 61 tick burst, so even the I/O
+bound one waits behind it, the convoy effect. MLFQ matches round robin's
+response time because every new process starts in queue 0, where the slice is a
+single tick, so nobody waits long for a first turn. Round robin's waiting time
+depends on its quantum: a process waits roughly one quantum per other runnable
+process, so a short quantum improves responsiveness at the cost of more context
+switches, and a very long one turns it back into FIFO. MLFQ beats round robin on
+average turnaround (119.8 against 141.8) and waiting (80.8 against 102.8)
+because it learns from behaviour: the I/O bound and mixed processes stay near the
+top and finish in 42 and 68 ticks instead of 71 and 114. The CPU bound processes
+pay for that with slightly later finishes, but they run in 8 and 16 tick chunks
+at the bottom, which means fewer switches for the same work. The total run
+length hardly moves (195 to 203 ticks), since one CPU has the same amount of
+work to get through whatever the policy. What the scheduler decides is who waits
+and how long.
 
 ## Reproducing the numbers
 
@@ -314,9 +289,9 @@ The two figures are drawn from those files by `plots/plot_mlfq_timeline.py` and
 `plots/plot_comparison.py`, both of which take their input file names on the
 command line and default to the ones in that directory.
 
-`usertests -q` passes in full, all 67 tests, both under MLFQ and in the default
-round robin build, so the changes to the process table and the trap path do not
-break anything the stock kernel does.
+`usertests -q` passes in full under MLFQ with one CPU and with the default three,
+and in the default round robin build, so the changes to the process table and
+the trap path do not break anything the stock kernel does.
 
 It does not finish under FIFO, and that is the policy rather than the
 implementation: `killstatus` forks a child whose body is `while (1) getpid();`

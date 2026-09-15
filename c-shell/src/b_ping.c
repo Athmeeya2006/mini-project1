@@ -6,6 +6,7 @@
  * here as one that never existed.
  */
 #include <errno.h>
+#include <limits.h>
 #include <signal.h>
 #include <stdio.h>
 #include <sys/types.h>
@@ -22,7 +23,7 @@
 int builtin_ping(int argc, char **argv)
 {
     sigset_t saved;
-    long     typed, sig;
+    long     sig = 0;
     int      sent = 0;
 
     /* The signal is checked first, so a bad one is reported whether or not the
@@ -31,25 +32,28 @@ int builtin_ping(int argc, char **argv)
         err_printf("ping: invalid syntax");
         return 1;
     }
-    typed = parse_nonneg(argv[2]);
-    if (typed < 0) {
+    if (!is_digits(argv[2])) {
         err_printf("ping: invalid syntax");
         return 1;
     }
-    sig = typed % PING_SIGNAL_MODULO;
+    /* Reduced digit by digit, so a number of any length is still a valid
+     * non-negative integer rather than an overflow. */
+    for (const char *d = argv[2]; *d != '\0'; d++)
+        sig = (sig * 10 + (*d - '0')) % PING_SIGNAL_MODULO;
 
     jobs_block(&saved);
     if (argv[1][0] == '%') {
         /* A job number: the signal goes to every process in its group. */
         long  number = parse_nonneg(argv[1] + 1);
-        Job  *j      = jobs_find_number((int)number);
+        Job  *j      = jobs_find_number(number);
 
         if (j != NULL && j->pgid > 0 && kill(-j->pgid, (int)sig) == 0)
             sent = 1;
     } else {
         long pid = parse_nonneg(argv[1]);
 
-        if (jobs_find_pid((pid_t)pid) != NULL && kill((pid_t)pid, (int)sig) == 0)
+        if (pid > 0 && pid <= INT_MAX && jobs_find_pid((pid_t)pid) != NULL &&
+            kill((pid_t)pid, (int)sig) == 0)
             sent = 1;
     }
     jobs_unblock(&saved);

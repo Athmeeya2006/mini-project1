@@ -23,6 +23,17 @@ ShellState g_shell;
  * drawn again. */
 static volatile sig_atomic_t g_interrupted;
 
+/* Set when the shell is told to go away (SIGHUP when the terminal closes, or
+ * SIGTERM), so that it leaves through the same path as Ctrl-D and hangs up
+ * its jobs on the way out. */
+static volatile sig_atomic_t g_terminate;
+
+static void terminate_handler(int sig)
+{
+    (void)sig;
+    g_terminate = 1;
+}
+
 /* The shell must survive SIGINT and SIGTSTP rather than ignore them: a handler
  * is what makes the read at the prompt come back so the prompt can be redrawn.
  * Writing the newline here rather than in the loop keeps it in step with the
@@ -60,6 +71,8 @@ void shell_init(void)
      * it. */
     install_handler(SIGINT, interrupt_handler);
     install_handler(SIGTSTP, interrupt_handler);
+    install_handler(SIGHUP, terminate_handler);
+    install_handler(SIGTERM, terminate_handler);
     signal(SIGQUIT, SIG_IGN);
     /* Handing the terminal back and forth with tcsetpgrp() is done from a
      * process group that is not the terminal's own, which would otherwise stop
@@ -86,88 +99,124 @@ void shell_set_prev(const char *path)
     g_shell.has_prev = 1;
 }
 
-/* Read one line (at most CSHELL_MAX_INPUT characters) into buf.
- * Returns 0 on a complete line, 1 if something was printed over the prompt and
- * it has to be drawn again, 2 if the read was interrupted with nothing
- * printed, and -1 at end of input.
+/* Read one line (at most CSHELL_MAX_INPUT characters) into buf, carrying on
+ * from the *len characters already there. Returns 0 on a complete line, 1 if
+ * something was printed over the prompt and it has to be drawn again, and -1
+ * at end of input. The text read so far is left in buf with its length in
+ * *len whenever 1 is returned, so a redrawn prompt loses nothing.
+ *
+ * The line is read with read() rather than stdio: a stdio read that a signal
+ * interrupts throws away whatever part of the line it had already taken, and
+ * on a pipe it reads ahead past the line into input meant for the commands
+ * the shell runs (`peek -`). From a terminal a read hands back a line at a
+ * time anyway; from anything else the shell reads a byte at a time so that it
+ * never takes more than the one line.
  *
  * Ctrl-D is only end of input on an empty line. On a terminal it makes the
  * read come back with whatever has been typed so far and no newline, and the
- * shell then keeps that text and carries on reading, so the user sees nothing
- * happen. Input that is not a terminal has no Ctrl-D, so a last line with no
- * closing newline is simply run.
+ * shell keeps that text and carries on reading. Input that is not a terminal
+ * has no Ctrl-D, so a last line with no closing newline is simply run.
  */
-static int read_line(char *buf, size_t cap)
+static int read_line(char *buf, size_t cap, size_t *len)
 {
-    size_t len = 0;
-
-    buf[0] = '\0';
     for (;;) {
-        char *r;
+        size_t  want;
+        ssize_t r;
+
+        if (*len + 1 >= cap) {
+            buf[*len] = '\0';
+            return 0; /* the line filled the buffer */
+        }
+        want = g_shell.interactive ? cap - 1 - *len : 1;
 
         /* A background job that finishes while the shell sits here must report
          * itself straight away, so the handler is allowed to print and the
          * read comes back with EINTR instead of being restarted. */
         jobs_set_at_prompt(1);
-        r = fgets(buf + len, (int)(cap - len), stdin);
+        r = read(STDIN_FILENO, buf + *len, want);
         jobs_set_at_prompt(0);
 
-        if (r == NULL) {
-            if (ferror(stdin) && errno == EINTR) {
-                clearerr(stdin);
-                /* Only something that was actually printed needs a new prompt;
-                 * a job merely being stopped must not leave one behind. */
-                if (g_interrupted) {
-                    g_interrupted = 0;
-                    return 1;
-                }
-                return jobs_take_notified() ? 1 : 2;
+        if (g_terminate)
+            return -1;
+        if (r < 0) {
+            if (errno != EINTR)
+                return -1; /* the terminal has gone */
+            if (g_interrupted) {
+                /* Ctrl-C throws away the line being typed, as in any shell. */
+                g_interrupted = 0;
+                *len = 0;
+                return 1;
             }
-            /* End of input. On a terminal that is not permanent, so the flag
-             * has to be cleared or every later read would report it again. */
-            clearerr(stdin);
-            if (len == 0)
+            /* Only something that was actually printed needs a new prompt;
+             * a job merely being stopped must not leave one behind. */
+            if (jobs_take_notified())
+                return 1;
+            continue;
+        }
+        if (r == 0) {
+            if (*len == 0)
                 return -1;
             if (g_shell.interactive)
                 continue; /* Ctrl-D with text typed: keep it, read on */
+            buf[*len] = '\0';
             return 0;
         }
 
-        len += strlen(buf + len);
-        if (len > 0 && buf[len - 1] == '\n') {
-            buf[len - 1] = '\0';
-            return 0;
+        for (size_t i = *len; i < *len + (size_t)r; i++) {
+            if (buf[i] == '\n') {
+                buf[i] = '\0';
+                return 0;
+            }
         }
-        if (len + 1 >= cap)
-            return 0; /* the line filled the buffer */
+        *len += (size_t)r;
     }
 }
 
 void shell_loop(void)
 {
     /* +2 leaves room for the newline and the terminator. */
-    char line[CSHELL_MAX_INPUT + 2];
-    int  warned_stopped = 0;
+    char   line[CSHELL_MAX_INPUT + 2];
+    size_t typed = 0; /* characters of the line read before a redraw */
+    int    warned_stopped = 0;
 
     while (!g_shell.should_exit) {
         Token    *toks = NULL;
         Pipeline *pipes = NULL, *p;
         int       rc;
 
+        if (g_terminate)
+            break;
+
         /* Retire whatever finished while the last line was running. */
         jobs_sweep();
+        /* Anything printed or interrupted up to now has already been dealt
+         * with; only what happens while waiting for this line should make the
+         * prompt be drawn again. */
+        g_interrupted = 0;
+        (void)jobs_take_notified();
         prompt_display();
 
-        rc = read_line(line, sizeof line);
-        while (rc == 2)
-            rc = read_line(line, sizeof line); /* nothing was printed */
+        /* Text typed before the prompt had to be redrawn is still part of
+         * the line, so it is shown again after the new prompt. */
+        if (typed > 0) {
+            fwrite(line, 1, typed, stdout);
+            fflush(stdout);
+        }
+
+        rc = read_line(line, sizeof line, &typed);
         if (rc > 0)
             continue; /* something was printed over the prompt: draw it again */
+        typed = 0;
         if (rc < 0) {
+            if (g_terminate)
+                break;
             /* Ctrl-D on an empty line. Stopped jobs would be killed by the
              * SIGHUP that leaving sends, so the first Ctrl-D only warns; a
              * second one with nothing typed in between goes through. */
-            putchar('\n');
+            /* On a terminal the cursor is still on the prompt line; input
+             * from a pipe or a file has no such line to finish. */
+            if (g_shell.interactive)
+                putchar('\n');
             if (!warned_stopped && jobs_any_stopped()) {
                 err_printf("%s: there are stopped jobs", CSHELL_NAME);
                 warned_stopped = 1;

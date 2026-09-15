@@ -23,6 +23,11 @@
  * of one peek invocation. */
 static int g_seen;
 
+/* Whether the output so far ends part way through a line: a file with no
+ * final newline runs straight into the next one, exactly as `cat` would join
+ * them, so the start of the next file is not the start of a new line. */
+static int g_mid_line;
+
 static void emit_line(const char *s, size_t n, int number, int lineno)
 {
     if (number && n > 0)
@@ -40,9 +45,10 @@ static void forward_stream(int fd, int number)
 {
     char    buf[PEEK_CHUNK];
     ssize_t r;
-    int     at_start = 1;
+    int     at_start = !g_mid_line;
 
     while ((r = read(fd, buf, sizeof buf)) > 0) {
+        g_mid_line = buf[r - 1] != '\n';
         if (!number) {
             fwrite(buf, 1, (size_t)r, stdout);
             continue;
@@ -290,7 +296,8 @@ int builtin_peek(int argc, char **argv)
     int    number = 0, reverse = 0, status = 0;
     StrVec files;
 
-    g_seen = 0;
+    g_seen     = 0;
+    g_mid_line = 0;
     strvec_init(&files);
 
     for (int i = 1; i < argc; i++) {

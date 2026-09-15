@@ -162,7 +162,6 @@ found:
   // A new process is pushed to the back of the highest queue.
   p->qlevel = 0;
   p->qticks = 0;
-  p->qstart = ticks;
   p->qseq = queue_seq();
   schedlog('N', p);
 
@@ -512,13 +511,10 @@ update_time(void)
     case RUNNING:
       p->rtime++;
 #ifdef MLFQ
-      // The tick that has just ended is charged against the slice only if the
-      // process held the CPU for the whole of it. A process that was given the
-      // CPU part way through, ran for a moment and is still there when the
-      // interrupt lands has not used a slice's worth of anything, and billing
-      // it for one would push short lived work down the queues for no reason.
-      if ((int)ticks - 1 > p->qstart)
-        p->qticks++;
+      // Every tick that ends with the process on a CPU is a tick of its slice.
+      // Being preempted part way through a slice does not give the ticks back,
+      // so a process that keeps being pushed aside still uses its slice up.
+      p->qticks++;
 #endif
       break;
     case RUNNABLE:
@@ -692,7 +688,6 @@ scheduler(void)
     // It may have been taken by another CPU while the table was being read.
     if (best->state == RUNNABLE) {
       best->state = RUNNING;
-      best->qstart = ticks;
       if (best->first_run < 0)
         best->first_run = ticks;
       schedlog('R', best);
@@ -967,8 +962,11 @@ kkill(int pid)
     if (p->pid == pid) {
       p->killed = 1;
       if (p->state == SLEEPING) {
-        // Wake process from sleep().
+        // Wake process from sleep(). Like any other wakeup it rejoins the
+        // tail of the queue it left.
         p->state = RUNNABLE;
+        p->qseq = queue_seq();
+        schedlog('W', p);
       }
       release(&p->lock);
       return 0;

@@ -83,6 +83,9 @@ CFLAGS += -I.
 # the multi level feedback queue, SCHEDULER=FIFO the first come first served
 # one, and passing nothing at all leaves the original round robin scheduler.
 ifdef SCHEDULER
+ifeq ($(filter $(SCHEDULER),MLFQ FIFO),)
+$(error SCHEDULER must be MLFQ or FIFO (or left unset for round robin), not '$(SCHEDULER)')
+endif
 CFLAGS += -D$(SCHEDULER)
 endif
 CFLAGS += $(shell $(CC) -fno-stack-protector -E -x c /dev/null >/dev/null 2>&1 && echo -fno-stack-protector)

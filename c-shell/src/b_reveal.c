@@ -16,22 +16,12 @@
 #include "shell.h"
 #include "utils.h"
 
-static int name_needs_quotes(const char *s)
-{
-    for (const char *p = s; *p != '\0'; p++) {
-        if (*p == ' ' || *p == '\t' || *p == '\n')
-            return 1;
-    }
-    return 0;
-}
-
-/* ls quotes names containing blanks; do the same for the displayed path. */
+/* One entry per line, exactly as named: ls only adds quotes around unusual
+ * names when it writes to a terminal, never when its output is piped or saved,
+ * so a listing that is compared or processed must not carry them. */
 static void print_entry(const char *display, int is_dir_marker)
 {
-    if (name_needs_quotes(display))
-        printf("'%s'%s\n", display, is_dir_marker ? "/" : "");
-    else
-        printf("%s%s\n", display, is_dir_marker ? "/" : "");
+    printf("%s%s\n", display, is_dir_marker ? "/" : "");
 }
 
 /* `dir` is the directory to read, `prefix` is what to print in front of each

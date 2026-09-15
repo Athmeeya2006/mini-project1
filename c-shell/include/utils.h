@@ -37,6 +37,9 @@ void  strvec_free(StrVec *v);
  * a negative number, trailing rubbish or an empty string. */
 long parse_nonneg(const char *s);
 
+/* 1 if `s` is a non-empty run of decimal digits, however long. */
+int is_digits(const char *s);
+
 /* Print "cshell: ..." style diagnostics on stderr. */
 void err_printf(const char *fmt, ...);
 

@@ -169,7 +169,7 @@ void jobs_remove(Job *j)
         job_release(j);
 }
 
-Job *jobs_find_number(int number)
+Job *jobs_find_number(long number)
 {
     if (number <= 0)
         return NULL;
@@ -215,6 +215,20 @@ void jobs_mark_exited(pid_t pid)
         }
     }
     jobs_unblock(&saved);
+}
+
+void jobs_proc_exited(Job *j, pid_t pid, int wstatus)
+{
+    if (j == NULL)
+        return;
+    for (int k = 0; k < j->nprocs; k++) {
+        if (j->procs[k].pid != pid || j->procs[k].state == PROC_DONE)
+            continue;
+        j->procs[k].state = PROC_DONE;
+        j->ndone++;
+        if (k == 0)
+            j->leader_status = wstatus;
+    }
 }
 
 void jobs_mark_stopped(Job *j)

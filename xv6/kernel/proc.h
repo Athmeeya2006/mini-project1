@@ -116,7 +116,6 @@ struct proc {
   // of conditionals.
   int qlevel;    // queue it belongs to, 0 is the highest
   int qticks;    // ticks used of the current slice
-  int qstart;    // tick this run began on, so partial ticks are not charged
   uint64 qseq;   // position within the queue: smaller is nearer the head
 };
 

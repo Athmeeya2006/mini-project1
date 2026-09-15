@@ -16,6 +16,9 @@ TARGET := shell.out
 
 SRCS := $(wildcard $(SRC_DIR)/*.c)
 OBJS := $(patsubst $(SRC_DIR)/%.c,$(BUILD_DIR)/%.o,$(SRCS))
+# -MMD writes a .d file next to every object listing the headers it includes,
+# so editing a header rebuilds everything that uses it.
+DEPS := $(OBJS:.o=.d)
 
 .PHONY: all clean
 
@@ -25,10 +28,12 @@ $(TARGET): $(OBJS)
 	$(CC) $(OBJS) -o $@ $(LDFLAGS)
 
 $(BUILD_DIR)/%.o: $(SRC_DIR)/%.c | $(BUILD_DIR)
-	$(CC) $(CFLAGS) -c $< -o $@
+	$(CC) $(CFLAGS) -MMD -MP -c $< -o $@
 
 $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)
 
 clean:
 	rm -rf $(BUILD_DIR) $(TARGET)
+
+-include $(DEPS)

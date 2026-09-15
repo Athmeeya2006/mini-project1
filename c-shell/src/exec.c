@@ -11,6 +11,7 @@
 #include "exec.h"
 
 #include <errno.h>
+#include <fcntl.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -150,8 +151,11 @@ static void wait_for_release(int read_fd)
 
 /* --- launching ------------------------------------------------------------ */
 
-/* Runs in the child; never returns. `path` is NULL for an intrinsic. */
-static void child_exec(Command *cmd, char *path)
+/* Runs in the child; never returns. `path` is NULL for an intrinsic, and
+ * `missing` is set for a stage whose name could not be resolved: that stage
+ * still takes its place in the pipeline, so its neighbours see EOF on their
+ * pipe, but has nothing to run. */
+static void child_exec(Command *cmd, char *path, int missing)
 {
     sigset_t empty;
 
@@ -167,6 +171,11 @@ static void child_exec(Command *cmd, char *path)
     signal(SIGTTIN, SIG_DFL);
     signal(SIGTTOU, SIG_DFL);
     signal(SIGCHLD, SIG_DFL);
+    signal(SIGHUP, SIG_DFL);
+    signal(SIGTERM, SIG_DFL);
+
+    if (missing)
+        _exit(127);
 
     /* Intrinsics behave like any other command inside a pipeline. */
     if (path == NULL)
@@ -188,9 +197,16 @@ static int run_builtin_in_shell(Command *cmd)
     RedirPlan plan;
     int       saved_in = -1, saved_out = -1;
     int       status;
+    sigset_t  saved_mask;
 
     if (redirect_plan(cmd, &plan) != 0)
         return 1;
+
+    /* A background job that ends while an intrinsic runs is reported once the
+     * intrinsic is done, as for any foreground command. Holding SIGCHLD off
+     * also keeps a read the intrinsic makes (peek from the terminal) from
+     * being cut short by the reaper. */
+    jobs_block(&saved_mask);
 
     fflush(stdout);
     if (plan.in_fd >= 0) {
@@ -216,6 +232,7 @@ static int run_builtin_in_shell(Command *cmd)
 
     redirect_finish(&plan);
     redirect_release(&plan);
+    jobs_unblock(&saved_mask);
     return status;
 }
 
@@ -226,7 +243,8 @@ static void text_append(char *buf, size_t cap, size_t *len, const char *s)
     buf[*len] = '\0';
 }
 
-/* The command line as the job table wants to show it again later. */
+/* The command line as the job table wants to show it again later, including
+ * its redirections. */
 static void pipeline_text(Pipeline *p, char *buf, size_t cap)
 {
     size_t len = 0;
@@ -239,6 +257,13 @@ static void pipeline_text(Pipeline *p, char *buf, size_t cap)
             if (i > 0)
                 text_append(buf, cap, &len, " ");
             text_append(buf, cap, &len, c->argv[i]);
+        }
+        for (Redir *r = c->redirs; r != NULL; r = r->next) {
+            text_append(buf, cap, &len,
+                        r->type == REDIR_IN          ? " < "
+                        : r->type == REDIR_OUT_TRUNC ? " > "
+                                                     : " >> ");
+            text_append(buf, cap, &len, r->file);
         }
     }
 }
@@ -269,6 +294,7 @@ int exec_pipeline(Pipeline *p, int *launch_failed)
     RedirPlan *plans;
     pid_t     *pids;
     char     **paths;
+    int       *missing;
     int      (*pipes)[2] = NULL;
     int        sync_fd[2] = { -1, -1 };
     int        n = 0, i, status = 0;
@@ -289,24 +315,30 @@ int exec_pipeline(Pipeline *p, int *launch_failed)
     if (n == 1 && !p->background && is_builtin_cmd(p->cmds))
         return run_builtin_in_shell(p->cmds);
 
-    /* Resolve everything first: a name the shell cannot resolve is the one
-     * failure that must stop the sequence, and the parent has to see it. */
-    paths = xmalloc((size_t)n * sizeof *paths);
+    /* Resolve everything first. A lone command the shell cannot resolve could
+     * not be started at all, which is the one failure that stops the rest of a
+     * sequence. A stage of a longer pipeline is different: it is reported,
+     * and the rest of the pipeline still runs without it. */
+    paths   = xmalloc((size_t)n * sizeof *paths);
+    missing = xmalloc((size_t)n * sizeof *missing);
     for (i = 0, c = p->cmds; c != NULL; c = c->next, i++) {
-        paths[i] = NULL;
+        paths[i]   = NULL;
+        missing[i] = 0;
         if (is_builtin_cmd(c))
             continue;
         paths[i] = exec_resolve(c->argv[0]);
-        if (paths[i] == NULL) {
-            err_printf("%s: command not found (%s)", CSHELL_NAME,
-                       display_name(c->argv[0]));
-            for (int k = 0; k < i; k++)
-                free(paths[k]);
+        if (paths[i] != NULL)
+            continue;
+        err_printf("%s: command not found (%s)", CSHELL_NAME,
+                   display_name(c->argv[0]));
+        if (n == 1) {
             free(paths);
+            free(missing);
             if (launch_failed != NULL)
                 *launch_failed = 1;
             return 127;
         }
+        missing[i] = 1;
     }
 
     plans = xmalloc((size_t)n * sizeof *plans);
@@ -364,6 +396,16 @@ int exec_pipeline(Pipeline *p, int *launch_failed)
                  * the user's input. */
                 close(sync_fd[1]);
                 wait_for_release(sync_fd[0]);
+                /* Without a terminal there is no SIGTTIN to stop a read, and
+                 * the job would eat the input the shell itself is reading, so
+                 * it reads nothing at all instead. */
+                if (!g_shell.interactive && i == 0) {
+                    int devnull = open("/dev/null", O_RDONLY);
+                    if (devnull >= 0) {
+                        dup2(devnull, STDIN_FILENO);
+                        close(devnull);
+                    }
+                }
             } else if (g_shell.interactive) {
                 /* Claim the terminal here too, so the command can read from it
                  * whichever of the child and the parent gets there first.
@@ -385,7 +427,7 @@ int exec_pipeline(Pipeline *p, int *launch_failed)
                 if (k != i)
                     redirect_close(&plans[k]);
 
-            child_exec(c, paths[i]);
+            child_exec(c, paths[i], missing[i]);
         }
         setpgid(pid, pgid);
         if (pgid == 0)
@@ -444,6 +486,10 @@ int exec_pipeline(Pipeline *p, int *launch_failed)
                 stopped = 1;
                 break;
             }
+            /* Reaped here rather than by the handler, so the job has to be
+             * told, or a stage that ended before the others were stopped
+             * would be listed as stopped for ever. */
+            jobs_proc_exited(job, pids[i], wstatus);
             if (WIFSIGNALED(wstatus) &&
                 (WTERMSIG(wstatus) == SIGINT || WTERMSIG(wstatus) == SIGQUIT))
                 interrupted = 1;
@@ -454,6 +500,14 @@ int exec_pipeline(Pipeline *p, int *launch_failed)
         /* However it ended, the terminal comes back to the shell. */
         if (g_shell.interactive)
             tcsetpgrp(g_shell.terminal_fd, g_shell.pgid);
+
+        /* Ctrl-C leaves the cursor after the echoed "^C". The newline goes
+         * out before SIGCHLD is let through, so a background job reported
+         * the moment it is starts on a line of its own. */
+        if (interrupted) {
+            putchar('\n');
+            fflush(stdout);
+        }
 
         if (stopped) {
             /* The job stays on the books so it can be listed and resumed. Its
@@ -470,17 +524,12 @@ int exec_pipeline(Pipeline *p, int *launch_failed)
             }
         }
         jobs_unblock(&saved);
-
-        /* Ctrl-C leaves the cursor after the echoed "^C". */
-        if (interrupted) {
-            putchar('\n');
-            fflush(stdout);
-        }
     }
 
     for (i = 0; i < n; i++)
         free(paths[i]);
     free(paths);
+    free(missing);
     free(pipes);
     free(plans);
     free(pids);
@@ -490,6 +539,7 @@ fail:
     for (i = 0; i < n; i++)
         free(paths[i]);
     free(paths);
+    free(missing);
     free(plans);
     free(pids);
     return 1;
